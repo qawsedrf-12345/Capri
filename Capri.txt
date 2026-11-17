@@ -1,0 +1,3868 @@
+if not game:IsLoaded() then game.Loaded:Wait() end
+
+local cloneref = cloneref or function(o) return o end
+local genv = (getgenv and getgenv()) or _G
+
+for _, chave in ipairs({ "__CapriProtocol_Cleanup", "__RespawnV73_Cleanup" }) do
+    if genv[chave] then pcall(genv[chave]); genv[chave] = nil end
+end
+
+local function svc(nome) return cloneref(game:GetService(nome)) end
+
+local Players          = svc("Players")
+local RunService       = svc("RunService")
+local SoundService     = svc("SoundService")
+local TweenService     = svc("TweenService")
+local Lighting         = svc("Lighting")
+local UserInputService = svc("UserInputService")
+
+local player = Players.LocalPlayer
+while not player do task.wait(); player = Players.LocalPlayer end
+
+--=============================================================
+-- CONFIGURAÇÃO
+--=============================================================
+local CONFIG = {
+    Qualidade = "auto",
+    OffsetY   = 3,
+    DEBUG     = false,
+
+    Audio = {
+        Ativo        = true,
+        VolumeMestre = 0.95,
+        VolumeVoz    = 1.0,
+        FalasCapri   = true,
+        FalasAtaque  = true,
+        ReacaoImpacto = true,
+        AtivarPorClique = true, -- desative se o jogo usar cliques para menus
+        AudiosDesconhecidos = false, -- Capri ez / Capri10 ficam opcionais até confirmar o conteúdo
+        CustomMorte   = "",
+        CustomRespawn = "",
+    },
+
+    Freeze = { Ativo = true, Duracao = 0.7, Camera = true, Movimento = true, Pulo = true },
+
+    Hud = { Ativo = true, Textos = true },
+
+    Morte = {
+        Flash = true, Escurecer = true, Letterbox = true, ColorGrade = true,
+        Bloom = true, Blur = true, Vinheta = true, Aberracao = true,
+        Scanlines = true, Glitch = true, Shake = true, Zoom = true,
+        ECG = true, Particulas = true,
+        Voxels = 70,
+    },
+
+    Respawn = {
+        GradeDecrypt = true, Flash = true, EstrelaFlare = true,
+        Aberracao = true, Scanlines = true, Shake = true, PunchFOV = true,
+        ColorGrade = true, Bloom = true, Blur = true, Particulas = true,
+        Feixe = true, DiscosChao = true, Luz = true, Highlight = true, PiscarCorpo = true,
+        Ondas  = 3,
+        Voxels = 60,
+    },
+
+    Intro = {
+        Ativo = true,
+        UmaVezPorServidor = true,   -- true: nunca repete no mesmo servidor (nem re-executando)
+        Camera = true,              -- cinemática de câmera na intro
+    },
+
+    Menu = {
+        Ativo = true,
+        Tecla = Enum.KeyCode.RightShift,   -- PC: abre/fecha (no celular use o botão "C")
+        AbrirAposIntro = true,
+        Som = true,
+        UsarPlayerGui = false,             -- true = usa PlayerGui em vez de gethui() (se o teclado/TextBox não abrir)
+    },
+
+    TP = {
+        Distancia = 4,       -- studs atrás do alvo
+        MinLetras = 2,       -- letras para começar a sugerir
+        Cooldown = 1.2,
+        Efeitos = true,
+    },
+
+    RespawnTP = {
+        Repeticoes = 2,      -- quantas vezes teleporta ao renascer
+        Intervalo  = 0.04,   -- segundos entre cada teleporte
+        Reforco    = true,   -- depois confere por ~0.5s se o jogo te moveu e leva de volta
+    },
+
+    Lista = {
+        Maximo   = 12,       -- máximo de linhas na lista rápida
+        Recentes = 8,        -- quantos alvos recentes guardar
+        Salvar   = true,     -- salva os recentes em arquivo (writefile) se o executor suportar
+        Arquivo  = "CapriProtocol_recentes.json",
+    },
+
+    -- 🎭 MORPH — mantém o comportamento do arquivo original
+    Morph = { Ativo = true, Username = "KinxCaesar" },
+
+    -- ✨ MANIFESTAÇÕES VISUAIS CAPRI (somente visuais e locais)
+    CapriAmbient = {
+        Ativo = true,
+        IntervaloMin = 2.4,
+        IntervaloMax = 5.8,
+        EfeitosMin = 3,
+        EfeitosMax = 6,
+        Intensidade = 1.15,
+    },
+
+    CapriAura = {
+        Ativo = true,
+        Fragmentos = 5,           -- fragmentos orbitais persistentes
+        Particulas = true,
+        Brilho = true,
+        Silhueta = true,
+        Intensidade = 1.0,
+    },
+}
+
+local PALETA = {
+    Ciano    = Color3.fromRGB(125, 215, 255), -- brilho frio / detalhe dos olhos
+    Magenta  = Color3.fromRGB(255, 55, 170),  -- rosa intenso
+    Amarelo  = Color3.fromRGB(178, 255, 35),  -- verde ácido
+    Vermelho = Color3.fromRGB(242, 18, 58),   -- silhueta vermelha
+    Roxo     = Color3.fromRGB(205, 35, 155),
+    Verde    = Color3.fromRGB(155, 255, 28),  -- fragmentos móveis
+    Escuro   = Color3.fromRGB(8, 3, 13),
+    Branco   = Color3.fromRGB(248, 250, 255),
+    Ouro     = Color3.fromRGB(255, 205, 60),   -- amigos / destaques do menu
+}
+local NEONS = { PALETA.Verde, PALETA.Magenta, PALETA.Vermelho, PALETA.Ciano, PALETA.Branco }
+
+--=============================================================
+-- HELPERS
+--=============================================================
+local encerrado = false
+local conexoes = {}
+
+local function rastrear(c) conexoes[#conexoes + 1] = c; return c end
+local function rf(a, b) return a + math.random() * (b - a) end
+local function pick(t) return t[math.random(#t)] end
+
+local function seguro(fn, ...)
+    local args = table.pack(...)
+    task.spawn(function()
+        local ok, err = pcall(fn, table.unpack(args, 1, args.n))
+        if not ok then
+            warn("[Capri] erro:", err)
+            local erros = genv.__CapriErros or {}
+            genv.__CapriErros = erros
+            erros[#erros + 1] = tostring(err)
+        end
+    end)
+end
+
+local function novo(classe, props, pai)
+    local o = Instance.new(classe)
+    for k, v in pairs(props) do o[k] = v end
+    if pai then o.Parent = pai end
+    return o
+end
+
+local function tw(obj, dur, props, estilo, dir)
+    local t = TweenService:Create(obj, TweenInfo.new(dur, estilo or Enum.EasingStyle.Quad, dir or Enum.EasingDirection.Out), props)
+    t:Play()
+    return t
+end
+
+--=============================================================
+-- ESTADO
+--=============================================================
+local cframeSalvo, cframeSeguro = nil, nil
+local ultimoCFrameSalvo, tempoUltimoSalvamento = nil, 0
+local marcador = nil
+local salvandoAtivo = true
+local cicloAtual = 0
+local emMorte = false
+local conexoesCharacter = {}
+local morphDescCache = nil
+local avisoR15JaMostrado = false     -- ⬅️ vindo do Char.txt
+local fovOriginal = nil
+local hudConn = nil
+local freezeAtivo, freezeConexoes, freezeToken = false, {}, 0
+local capriIniciarAura = nil
+local capriOnImpact = nil
+local capriOnDodge = nil
+local capriLimparAura = nil
+
+--=============================================================
+-- QUALIDADE / PASTA DE EFEITOS 3D
+--=============================================================
+local function calcularQ()
+    local q = CONFIG.Qualidade
+    if q == "alta" then return 1 end
+    if q == "media" then return 0.65 end
+    if q == "baixa" then return 0.35 end
+    local celular = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
+    return celular and 0.6 or 1
+end
+local Q = calcularQ()
+local function N(x) return math.max(1, math.floor(x * Q + 0.5)) end
+
+local fxFolder = Instance.new("Folder")
+fxFolder.Name = "CapriFX"
+fxFolder.Parent = workspace
+
+--=============================================================
+-- DIRETOR DE CÂMERA
+--=============================================================
+local CAM_BIND = "CapriCamFX"
+local CamFX = { shakes = {}, fov = nil, congelar = nil, custom = nil, ligado = false }
+
+local function camPasso()
+    local c = workspace.CurrentCamera
+    if not c then return end
+    local t = os.clock()
+
+    if CamFX.congelar then
+        c.CFrame = CamFX.congelar
+        c.Focus = CFrame.new(CamFX.congelar.Position)
+    end
+
+    if CamFX.fov then
+        local f = CamFX.fov
+        local a = (t - f.ini) / f.dur
+        if a >= 1 then
+            c.FieldOfView = f.para
+            CamFX.fov = nil
+        else
+            c.FieldOfView = f.de + (f.para - f.de) * TweenService:GetValue(a, f.estilo, f.dir)
+        end
+    end
+
+    if CamFX.custom then
+        local okc = pcall(CamFX.custom, c, t)
+        if not okc then CamFX.custom = nil end
+    end
+
+    local ox, oy, rot = 0, 0, 0
+    for i = #CamFX.shakes, 1, -1 do
+        local s = CamFX.shakes[i]
+        local p = (t - s.ini) / s.dur
+        if p >= 1 then
+            table.remove(CamFX.shakes, i)
+        else
+            local f = (1 - p) * (1 - p) * s.intens
+            ox = ox + (math.random() - 0.5) * 2 * f
+            oy = oy + (math.random() - 0.5) * 2 * f
+            if s.rot then rot = rot + (math.random() - 0.5) * math.rad(2.2) * f end
+        end
+    end
+    if ox ~= 0 or oy ~= 0 or rot ~= 0 then
+        c.CFrame = c.CFrame * CFrame.new(ox, oy, 0) * CFrame.Angles(0, 0, rot)
+    end
+
+    if not CamFX.congelar and not CamFX.fov and not CamFX.custom and #CamFX.shakes == 0 then
+        CamFX.ligado = false
+        pcall(function() RunService:UnbindFromRenderStep(CAM_BIND) end)
+    end
+end
+
+local function camLigar()
+    if CamFX.ligado then return end
+    CamFX.ligado = true
+    RunService:BindToRenderStep(CAM_BIND, Enum.RenderPriority.Camera.Value + 2, camPasso)
+end
+
+local function camShake(intens, dur, rot)
+    CamFX.shakes[#CamFX.shakes + 1] = { ini = os.clock(), dur = dur, intens = intens, rot = rot }
+    camLigar()
+end
+
+local function camFov(de, para, dur, estilo, dir)
+    CamFX.fov = { de = de, para = para, dur = dur, ini = os.clock(),
+                  estilo = estilo or Enum.EasingStyle.Quad, dir = dir or Enum.EasingDirection.Out }
+    camLigar()
+end
+
+local function camCongelar(cf)
+    CamFX.congelar = cf
+    if cf then camLigar() end
+end
+
+local function camCustom(fn)
+    CamFX.custom = fn
+    if fn then camLigar() end
+end
+
+--=============================================================
+-- EFEITOS DE LIGHTING
+--=============================================================
+local efl = {}
+local efTokens = {}
+
+local function criarEfeitosLighting()
+    efl.cc    = novo("ColorCorrectionEffect", { Name = "CapriCC", Enabled = false }, Lighting)
+    efl.bloom = novo("BloomEffect", { Name = "CapriBloom", Enabled = false, Intensity = 0, Size = 28, Threshold = 0.9 }, Lighting)
+    efl.blur  = novo("BlurEffect", { Name = "CapriBlur", Enabled = false, Size = 0 }, Lighting)
+end
+criarEfeitosLighting()
+
+local function pulso(efeito, prop, pico, dur)
+    efeito.Enabled = true
+    efeito[prop] = pico
+    local meu = (efTokens[efeito] or 0) + 1
+    efTokens[efeito] = meu
+    tw(efeito, dur, { [prop] = 0 })
+    task.delay(dur + 0.05, function()
+        if efTokens[efeito] == meu and efeito.Parent then efeito.Enabled = false end
+    end)
+end
+
+local function gradeMorte()
+    efl.cc.Enabled = true
+    tw(efl.cc, 0.5, { Saturation = -0.85, Contrast = 0.3, Brightness = -0.06, TintColor = Color3.fromRGB(255, 195, 215) })
+end
+
+local function resetGrade(dur)
+    dur = dur or 0.5
+    tw(efl.cc, dur, { Saturation = 0, Contrast = 0, Brightness = 0, TintColor = Color3.new(1, 1, 1) })
+    task.delay(dur + 0.05, function()
+        if not emMorte and efl.cc.Parent then efl.cc.Enabled = false end
+    end)
+end
+
+local function gradeRespawn()
+    efl.cc.Enabled = true
+    efl.cc.Saturation, efl.cc.Contrast, efl.cc.Brightness = 0.9, 0.45, 0.12
+    efl.cc.TintColor = Color3.fromRGB(190, 255, 255)
+    resetGrade(1.1)
+end
+
+--=============================================================
+-- ÁUDIO
+--=============================================================
+local SONS = {
+    ping  = { "rbxasset://sounds/electronicpingshort.wav", "rbxasset://sounds/switch.wav" },
+    boom  = { "rbxasset://sounds/impact_explosion_03.mp3", "rbxasset://sounds/bass.wav" },
+    snap  = { "rbxasset://sounds/snap.mp3", "rbxasset://sounds/clickfast.wav" },
+    bass  = { "rbxasset://sounds/bass.wav", "rbxasset://sounds/impact_explosion_03.mp3" },
+    click = { "rbxasset://sounds/clickfast.wav", "rbxasset://sounds/snap.mp3", "rbxasset://sounds/switch.wav" },
+}
+
+local audiosAtivos = {}
+local audioFalhas = {}   -- id -> nº de falhas ao carregar
+
+-- Vozes fornecidas pelo usuário. Os dois últimos ficam em espera porque
+-- o nome do asset não revela o conteúdo real do áudio.
+local CAPRI_VOZ = {
+    intro      = "rbxassetid://134305002698966", -- Just call me Capri...
+    taunt      = "rbxassetid://96612055212598",  -- Good boyyy...
+    reaction   = "rbxassetid://119210716372596", -- Wo oh
+    preAttack  = "rbxassetid://90419534873327",  -- Hi little baby...
+    extra1     = "rbxassetid://111022649538175", -- Capri ez (não identificado)
+    extra2     = "rbxassetid://74710253480339",  -- Capri10 (não identificado)
+}
+
+local function tocarSom(ids, vol, vel, fxs)
+    if not CONFIG.Audio.Ativo or encerrado then return nil end
+    if type(ids) == "string" then ids = { ids } end
+    for _, id in ipairs(ids) do
+        if id ~= "" and (audioFalhas[id] or 0) < (id:find("^rbxasset://") and 2 or 3) then
+            local s = Instance.new("Sound")
+            s.SoundId = id
+            s.Volume = (vol or 1) * CONFIG.Audio.VolumeMestre
+            s.PlaybackSpeed = vel or 1
+            for _, e in ipairs(fxs or {}) do
+                local ok, fx = pcall(Instance.new, e[1])
+                if ok and fx then
+                    for k, v in pairs(e[2]) do pcall(function() fx[k] = v end) end
+                    fx.Parent = s
+                end
+            end
+            s.Parent = SoundService
+            local t0 = os.clock()
+            local espera = id:find("^rbxasset://") and 0.4 or 3.0
+            while not s.IsLoaded and os.clock() - t0 < espera and not encerrado do task.wait(0.05) end
+            if s.IsLoaded then
+                audiosAtivos[s] = true
+                s.Ended:Connect(function() audiosAtivos[s] = nil; s:Destroy() end)
+                task.delay(12, function() audiosAtivos[s] = nil; s:Destroy() end)
+                s:Play()
+                return s
+            end
+            audioFalhas[id] = (audioFalhas[id] or 0) + 1
+            if CONFIG.DEBUG then warn("[Capri Audio] áudio não carregou ou não está autorizado: " .. tostring(id)) end
+            s:Destroy()
+        end
+    end
+    return nil
+end
+
+local function tocarVoz(chave, volume, velocidade)
+    if not CONFIG.Audio.Ativo or not CONFIG.Audio.FalasCapri then return end
+    local id = CAPRI_VOZ[chave]
+    if not id then return end
+    if (chave == "extra1" or chave == "extra2") and not CONFIG.Audio.AudiosDesconhecidos then return end
+    seguro(tocarSom, id, volume or CONFIG.Audio.VolumeVoz, velocidade or rf(0.97, 1.03), {
+        { "ReverbSoundEffect", { DecayTime = 0.75, Density = 0.65, Diffusion = 0.8, WetLevel = -8 } },
+    })
+end
+
+local function audioMorte()
+    if not CONFIG.Audio.Ativo then return end
+    seguro(tocarSom, SONS.boom, 2.4, 0.5, {
+        { "DistortionSoundEffect", { Level = 0.55 } },
+        { "ReverbSoundEffect", { DecayTime = 3, Density = 1, Diffusion = 1, DryLevel = 0, WetLevel = -4 } },
+    })
+    for i = 1, 9 do
+        task.delay((i - 1) * 0.065, function()
+            seguro(tocarSom, SONS.ping, 0.8, 2.4 - (i - 1) * 0.25, {
+                { "EchoSoundEffect", { Delay = 0.14, Feedback = 0.45, DryLevel = 0, WetLevel = -5 } },
+            })
+        end)
+    end
+    for _ = 1, 7 do
+        task.delay(rf(0.05, 0.7), function()
+            seguro(tocarSom, SONS.click, rf(0.5, 1), rf(0.6, 3.2))
+        end)
+    end
+    seguro(tocarSom, SONS.bass, 1.6, 0.45, { { "TremoloSoundEffect", { Depth = 0.7, Frequency = 6, Duty = 0.5 } } })
+    if CONFIG.Audio.CustomMorte ~= "" then
+        seguro(tocarSom, CONFIG.Audio.CustomMorte, 1, rf(0.98, 1.02))
+    end
+end
+
+local function audioRespawn()
+    if not CONFIG.Audio.Ativo then return end
+    local notas = { 0.7, 0.88, 1.05, 1.32, 1.65, 2.1 }
+    for i, v in ipairs(notas) do
+        task.delay((i - 1) * 0.06, function()
+            seguro(tocarSom, SONS.ping, 0.85, v, {
+                { "ChorusSoundEffect", { Depth = 0.6, Mix = 0.5, Rate = 1.2 } },
+                { "ReverbSoundEffect", { DecayTime = 1.6, WetLevel = -5 } },
+            })
+        end)
+    end
+    task.delay(0.30, function()
+        seguro(tocarSom, SONS.boom, 1.6, 0.85, {
+            { "DistortionSoundEffect", { Level = 0.35 } },
+            { "ReverbSoundEffect", { DecayTime = 2.2, WetLevel = -3 } },
+        })
+    end)
+    task.delay(0.36, function() seguro(tocarSom, SONS.snap, 1.2, 1.5) end)
+    seguro(tocarSom, SONS.bass, 1.3, 0.6, { { "TremoloSoundEffect", { Depth = 0.8, Frequency = 9, Duty = 0.5 } } })
+    if CONFIG.Audio.CustomRespawn ~= "" then
+        seguro(tocarSom, CONFIG.Audio.CustomRespawn, 1, rf(0.98, 1.02))
+    end
+end
+
+--=============================================================
+-- ÁUDIO EXTRA — biblioteca de sons da UI / TP / intro
+--=============================================================
+local sfx = {}
+do
+    local function som(ids, vol, vel, fxs) seguro(tocarSom, ids, vol, vel, fxs) end
+    local function somEm(atraso, ids, vol, vel, fxs)
+        task.delay(atraso, function() som(ids, vol, vel, fxs) end)
+    end
+
+    function sfx.tick()  som(SONS.click, 0.4, rf(1.7, 2.5)) end
+    function sfx.hover() som(SONS.click, 0.2, rf(2.4, 3.0)) end
+
+    function sfx.clique()
+        som(SONS.snap, 0.7, rf(1.3, 1.6))
+        somEm(0.03, SONS.ping, 0.35, 2.3)
+    end
+
+    function sfx.abrir()
+        local notas = { 0.8, 1.0, 1.25, 1.6, 2.0 }
+        for i, v in ipairs(notas) do
+            somEm((i - 1) * 0.05, SONS.ping, 0.6, v, { { "ChorusSoundEffect", { Depth = 0.5, Mix = 0.4, Rate = 1.4 } } })
+        end
+        somEm(0.08, SONS.click, 0.8, rf(0.8, 1.2))
+        som(SONS.bass, 0.8, 0.9, { { "DistortionSoundEffect", { Level = 0.25 } } })
+    end
+
+    function sfx.fechar()
+        for i = 1, 5 do somEm((i - 1) * 0.045, SONS.ping, 0.55, 2.0 - (i - 1) * 0.32) end
+        som(SONS.snap, 0.8, 0.8)
+    end
+
+    function sfx.achou()
+        som(SONS.ping, 0.7, 1.5, { { "EchoSoundEffect", { Delay = 0.1, Feedback = 0.3, DryLevel = 0, WetLevel = -6 } } })
+        somEm(0.07, SONS.ping, 0.7, 2.0)
+    end
+
+    function sfx.erro()
+        som(SONS.boom, 0.9, 1.6, { { "DistortionSoundEffect", { Level = 0.7 } } })
+        for i = 1, 4 do somEm(i * 0.05, SONS.click, 0.7, rf(0.5, 1)) end
+    end
+
+    function sfx.toggle(on)
+        if on then
+            somEm(0, SONS.ping, 0.6, 1.2)
+            somEm(0.06, SONS.ping, 0.6, 1.8)
+        else
+            somEm(0, SONS.ping, 0.6, 1.5)
+            somEm(0.06, SONS.ping, 0.6, 0.9)
+        end
+    end
+
+    function sfx.tpSaida()
+        for i = 1, 8 do
+            somEm((i - 1) * 0.04, SONS.ping, 0.7, 2.6 - (i - 1) * 0.3,
+                { { "FlangeSoundEffect", { Depth = 0.8, Mix = 0.6, Rate = 2 } } })
+        end
+        som(SONS.boom, 1.8, 0.7, {
+            { "DistortionSoundEffect", { Level = 0.45 } },
+            { "ReverbSoundEffect", { DecayTime = 2, WetLevel = -4 } },
+        })
+    end
+
+    function sfx.tpChegada()
+        for i = 1, 7 do
+            somEm((i - 1) * 0.045, SONS.ping, 0.75, 0.7 + (i - 1) * 0.28,
+                { { "ChorusSoundEffect", { Depth = 0.6, Mix = 0.5, Rate = 1.3 } } })
+        end
+        somEm(0.25, SONS.boom, 2.0, 0.9, {
+            { "DistortionSoundEffect", { Level = 0.4 } },
+            { "ReverbSoundEffect", { DecayTime = 2.4, WetLevel = -3 } },
+        })
+        somEm(0.3, SONS.snap, 1.2, 1.4)
+    end
+
+    function sfx.auraOn()
+        for i = 1, 6 do
+            somEm((i - 1) * 0.05, SONS.ping, 0.7, 0.6 + (i - 1) * 0.3, { { "DistortionSoundEffect", { Level = 0.3 } } })
+        end
+        somEm(0.2, SONS.bass, 1.4, 0.55, { { "TremoloSoundEffect", { Depth = 0.8, Frequency = 10, Duty = 0.5 } } })
+    end
+
+    function sfx.auraOff()
+        for i = 1, 5 do somEm((i - 1) * 0.05, SONS.ping, 0.6, 1.9 - (i - 1) * 0.32) end
+        somEm(0.1, SONS.snap, 0.8, 0.7)
+    end
+
+    function sfx.introBoot()
+        for i = 1, 12 do
+            somEm((i - 1) * 0.14, SONS.ping, 0.45, 0.5 + (i - 1) * 0.15,
+                { { "EchoSoundEffect", { Delay = 0.12, Feedback = 0.35, DryLevel = 0, WetLevel = -6 } } })
+        end
+        for _ = 1, 10 do somEm(rf(0, 1.6), SONS.click, rf(0.3, 0.6), rf(1, 3.4)) end
+        som(SONS.bass, 1.2, 0.4, { { "TremoloSoundEffect", { Depth = 0.7, Frequency = 5, Duty = 0.5 } } })
+    end
+
+    function sfx.introBreach()
+        som(SONS.boom, 2.6, 0.45, {
+            { "DistortionSoundEffect", { Level = 0.6 } },
+            { "ReverbSoundEffect", { DecayTime = 3.2, WetLevel = -3 } },
+        })
+        for i = 1, 9 do somEm((i - 1) * 0.04, SONS.ping, 0.8, 2.6 - (i - 1) * 0.25) end
+    end
+
+    function sfx.introMaterializa()
+        sfx.tpChegada()
+        somEm(0.4, SONS.bass, 1.5, 0.6, { { "DistortionSoundEffect", { Level = 0.35 } } })
+        for i = 1, 6 do
+            somEm(0.5 + (i - 1) * 0.06, SONS.ping, 0.7, 1.0 + (i - 1) * 0.3,
+                { { "ReverbSoundEffect", { DecayTime = 2, WetLevel = -4 } } })
+        end
+    end
+end
+
+--=============================================================
+-- GUI
+--=============================================================
+local function pegarGuiParent()
+    if gethui and not CONFIG.Menu.UsarPlayerGui then
+        local ok, r = pcall(gethui)
+        if ok and r then return r end
+    end
+    return player:WaitForChild("PlayerGui")
+end
+
+local function frame(props, pai)
+    local p = { BorderSizePixel = 0, BackgroundColor3 = PALETA.Branco, BackgroundTransparency = 1 }
+    for k, v in pairs(props) do p[k] = v end
+    return novo("Frame", p, pai)
+end
+
+local function texto(props, pai)
+    local p = { BackgroundTransparency = 1, BorderSizePixel = 0, TextColor3 = PALETA.Branco,
+                Font = Enum.Font.Code, Text = "", TextSize = 14 }
+    for k, v in pairs(props) do p[k] = v end
+    return novo("TextLabel", p, pai)
+end
+
+local TELA = UDim2.fromScale(1, 1)
+local G = {}
+
+local gui = Instance.new("ScreenGui")
+gui.Name = "CapriProtocol"
+gui.ResetOnSpawn = false
+gui.IgnoreGuiInset = true
+gui.DisplayOrder = 999
+gui.ZIndexBehavior = Enum.ZIndexBehavior.Global
+pcall(function() gui.ScreenInsets = Enum.ScreenInsets.None end)
+gui.Parent = pegarGuiParent()
+
+G.escuro = frame({ Size = TELA, ZIndex = 990 }, gui)
+novo("UIGradient", {
+    Rotation = 90,
+    Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, Color3.fromRGB(6, 10, 30)),
+        ColorSequenceKeypoint.new(1, Color3.fromRGB(34, 6, 40)),
+    }),
+}, G.escuro)
+
+G.scan = frame({ Size = TELA, ZIndex = 996, Visible = false }, gui)
+local nLinhas = 54
+for i = 1, nLinhas do
+    frame({ Size = UDim2.new(1, 0, 0, 2), Position = UDim2.new(0, 0, (i - 1) / nLinhas, 0),
+            BackgroundColor3 = Color3.new(0, 0, 0), BackgroundTransparency = 0.82, ZIndex = 996 }, G.scan)
+end
+G.roll = frame({ Size = UDim2.new(1, 0, 0.16, 0), Position = UDim2.new(0, 0, -0.2, 0),
+                 BackgroundColor3 = PALETA.Ciano, BackgroundTransparency = 0, ZIndex = 997 }, G.scan)
+novo("UIGradient", {
+    Rotation = 90,
+    Transparency = NumberSequence.new({
+        NumberSequenceKeypoint.new(0, 1), NumberSequenceKeypoint.new(0.5, 0.93), NumberSequenceKeypoint.new(1, 1),
+    }),
+}, G.roll)
+
+local function criarAber(cor)
+    local f = frame({ Size = TELA, BackgroundColor3 = cor, ZIndex = 997 }, gui)
+    novo("UIGradient", {
+        Transparency = NumberSequence.new({
+            NumberSequenceKeypoint.new(0, 0), NumberSequenceKeypoint.new(0.3, 1),
+            NumberSequenceKeypoint.new(0.7, 1), NumberSequenceKeypoint.new(1, 0),
+        }),
+    }, f)
+    return f
+end
+G.aberR = criarAber(Color3.fromRGB(255, 0, 60))
+G.aberC = criarAber(PALETA.Ciano)
+
+G.vinheta = {}
+local function ladoVinheta(pos, tam, rot)
+    local f = frame({ Position = pos, Size = tam, BackgroundColor3 = PALETA.Vermelho, ZIndex = 998 }, gui)
+    novo("UIGradient", {
+        Rotation = rot,
+        Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0), NumberSequenceKeypoint.new(1, 1) }),
+    }, f)
+    G.vinheta[#G.vinheta + 1] = f
+end
+ladoVinheta(UDim2.new(0, 0, 0, 0),    UDim2.new(1, 0, 0.38, 0), 90)
+ladoVinheta(UDim2.new(0, 0, 0.62, 0), UDim2.new(1, 0, 0.38, 0), 270)
+ladoVinheta(UDim2.new(0, 0, 0, 0),    UDim2.new(0.28, 0, 1, 0), 0)
+ladoVinheta(UDim2.new(0.72, 0, 0, 0), UDim2.new(0.28, 0, 1, 0), 180)
+
+G.letraTop = frame({ Size = UDim2.new(1, 0, 0, 0), BackgroundColor3 = Color3.new(0, 0, 0),
+                     BackgroundTransparency = 0, ZIndex = 1000 }, gui)
+frame({ AnchorPoint = Vector2.new(0, 1), Position = UDim2.fromScale(0, 1), Size = UDim2.new(1, 0, 0, 2),
+        BackgroundColor3 = PALETA.Ciano, BackgroundTransparency = 0.3, ZIndex = 1001 }, G.letraTop)
+G.letraBot = frame({ AnchorPoint = Vector2.new(0, 1), Position = UDim2.fromScale(0, 1), Size = UDim2.new(1, 0, 0, 0),
+                     BackgroundColor3 = Color3.new(0, 0, 0), BackgroundTransparency = 0, ZIndex = 1000 }, gui)
+frame({ Position = UDim2.fromScale(0, 0), Size = UDim2.new(1, 0, 0, 2),
+        BackgroundColor3 = PALETA.Magenta, BackgroundTransparency = 0.3, ZIndex = 1001 }, G.letraBot)
+
+G.hud = frame({ Size = TELA, ZIndex = 1002, Visible = false }, gui)
+
+local function criarTitulo(cor, dx, transp, z)
+    return texto({
+        Size = UDim2.new(0.8, 0, 0.12, 0), AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.new(0.5, dx, 0.40, 0), Font = Enum.Font.SciFi, TextScaled = true,
+        TextColor3 = cor, TextTransparency = transp, ZIndex = z,
+    }, G.hud)
+end
+G.tituloR = criarTitulo(PALETA.Vermelho, -4, 0.35, 1002)
+G.tituloC = criarTitulo(PALETA.Ciano, 4, 0.35, 1002)
+G.titulo  = criarTitulo(PALETA.Branco, 0, 0, 1003)
+G.titStroke = novo("UIStroke", { Color = PALETA.Vermelho, Thickness = 2, Transparency = 0.4 }, G.titulo)
+
+G.sub = texto({
+    Size = UDim2.new(0.8, 0, 0.032, 0), AnchorPoint = Vector2.new(0.5, 0.5),
+    Position = UDim2.new(0.5, 0, 0.485, 0), TextScaled = true, TextColor3 = PALETA.Ciano, ZIndex = 1003,
+}, G.hud)
+
+G.barraBg = frame({
+    Size = UDim2.new(0.34, 0, 0, 8), AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0.56, 0),
+    BackgroundColor3 = Color3.fromRGB(10, 14, 30), BackgroundTransparency = 0.2, ZIndex = 1003, Visible = false,
+}, G.hud)
+novo("UIStroke", { Color = PALETA.Ciano, Thickness = 1, Transparency = 0.3 }, G.barraBg)
+G.barraFill = frame({ Size = UDim2.new(0, 0, 1, 0), BackgroundColor3 = PALETA.Ciano,
+                      BackgroundTransparency = 0, ZIndex = 1004 }, G.barraBg)
+G.barraTag = texto({
+    Size = UDim2.new(1, 0, 0, 16), AnchorPoint = Vector2.new(0, 1), Position = UDim2.new(0, 0, 0, -4),
+    TextXAlignment = Enum.TextXAlignment.Left, TextColor3 = PALETA.Magenta, ZIndex = 1003,
+}, G.barraBg)
+G.barraPct = texto({
+    Size = UDim2.new(1, 0, 0, 16), AnchorPoint = Vector2.new(0, 1), Position = UDim2.new(0, 0, 0, -4),
+    TextXAlignment = Enum.TextXAlignment.Right, TextColor3 = PALETA.Ciano, ZIndex = 1003,
+}, G.barraBg)
+
+G.hexL = texto({
+    Size = UDim2.new(0.22, 0, 0.5, 0), Position = UDim2.new(0.02, 0, 0.25, 0),
+    TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top,
+    TextSize = 11, TextColor3 = PALETA.Ciano, TextTransparency = 0.45, ZIndex = 1003,
+}, G.hud)
+G.hexR = texto({
+    Size = UDim2.new(0.22, 0, 0.5, 0), Position = UDim2.new(0.76, 0, 0.25, 0),
+    TextXAlignment = Enum.TextXAlignment.Right, TextYAlignment = Enum.TextYAlignment.Top,
+    TextSize = 11, TextColor3 = PALETA.Magenta, TextTransparency = 0.45, ZIndex = 1003,
+}, G.hud)
+
+local ECG_N = 56
+G.ecg = frame({
+    Size = UDim2.new(0.36, 0, 0.1, 0), AnchorPoint = Vector2.new(0.5, 0.5),
+    Position = UDim2.new(0.5, 0, 0.8, 0), ZIndex = 1003,
+}, G.hud)
+G.ecgPts = {}
+for i = 1, ECG_N do
+    G.ecgPts[i] = frame({
+        Size = UDim2.new(0, 3, 0, 3), AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.new((i - 1) / (ECG_N - 1), 0, 0.5, 0),
+        BackgroundColor3 = PALETA.Verde, BackgroundTransparency = 0.1, ZIndex = 1003,
+    }, G.ecg)
+end
+
+G.fx = frame({ Size = TELA, ZIndex = 1010 }, gui)
+G.flash = frame({ Size = TELA, BackgroundColor3 = PALETA.Branco, ZIndex = 1020 }, gui)
+
+genv.__CapriProtocol_Cleanup = function()   -- provisória (a completa é registrada no fim do script)
+    encerrado = true
+    for _, c in ipairs(conexoes) do pcall(function() c:Disconnect() end) end
+    pcall(function() RunService:UnbindFromRenderStep(CAM_BIND) end)
+    pcall(function() RunService:UnbindFromRenderStep("CapriFreezeInput") end)
+    for _, e in pairs(efl) do pcall(function() e:Destroy() end) end
+    pcall(function() fxFolder:Destroy() end)
+    pcall(function() gui:Destroy() end)
+end
+
+--=============================================================
+-- EFEITOS 2D
+--=============================================================
+local function diagTela()
+    local c = workspace.CurrentCamera
+    return c and c.ViewportSize.Magnitude or 1400
+end
+
+local function flashTela(cor, dur, t0)
+    G.flash.BackgroundColor3 = cor
+    G.flash.BackgroundTransparency = t0 or 0
+    tw(G.flash, dur or 0.2, { BackgroundTransparency = 1 })
+end
+
+local function vinhetaSet(cor, transp, dur)
+    for _, f in ipairs(G.vinheta) do
+        f.BackgroundColor3 = cor
+        tw(f, dur, { BackgroundTransparency = transp })
+    end
+end
+
+local function letterbox(abrir, dur)
+    local alvo = abrir and 0.11 or 0
+    tw(G.letraTop, dur, { Size = UDim2.new(1, 0, alvo, 0) }, Enum.EasingStyle.Quart)
+    tw(G.letraBot, dur, { Size = UDim2.new(1, 0, alvo, 0) }, Enum.EasingStyle.Quart)
+end
+
+local aberToken = 0
+local function aberracao(dur, desloc, forca)
+    aberToken = aberToken + 1
+    local meu = aberToken
+    local ini = os.clock()
+    forca = forca or 0.45
+    local conn
+    conn = RunService.RenderStepped:Connect(function()
+        local p = (os.clock() - ini) / dur
+        if encerrado or meu ~= aberToken or p >= 1 then
+            conn:Disconnect()
+            if meu == aberToken then
+                G.aberR.BackgroundTransparency, G.aberC.BackgroundTransparency = 1, 1
+            end
+            return
+        end
+        local k = 1 - p
+        local d = desloc * k * (0.5 + math.random())
+        G.aberR.Position = UDim2.new(0, -d, 0, 0)
+        G.aberC.Position = UDim2.new(0, d, 0, 0)
+        local t = 1 - (1 - forca) * k * (0.6 + 0.4 * math.random())
+        G.aberR.BackgroundTransparency, G.aberC.BackgroundTransparency = t, t
+    end)
+end
+
+local function glitchBlocos(dur, taxa)
+    task.spawn(function()
+        local ini = os.clock()
+        while os.clock() - ini < dur and not encerrado do
+            for _ = 1, N(taxa) do
+                local larg = math.random(6, 40) / 100
+                local b = frame({
+                    Size = UDim2.new(larg, 0, 0, math.random(2, 14)),
+                    Position = UDim2.new(math.random() * (1 - larg), 0, math.random(), 0),
+                    BackgroundColor3 = pick(NEONS), BackgroundTransparency = rf(0.15, 0.6), ZIndex = 1012,
+                }, G.fx)
+                task.delay(rf(0.03, 0.11), function() b:Destroy() end)
+            end
+            task.wait(0.05)
+        end
+    end)
+end
+
+local function estrelaFlare(cor, dur)
+    local diag = diagTela()
+    local miolo = frame({
+        Size = UDim2.new(0, 0, 0, 0), AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
+        BackgroundColor3 = PALETA.Branco, BackgroundTransparency = 0, ZIndex = 1015,
+    }, G.fx)
+    novo("UICorner", { CornerRadius = UDim.new(1, 0) }, miolo)
+    tw(miolo, dur * 0.35, { Size = UDim2.fromOffset(44, 44) }, Enum.EasingStyle.Back)
+    task.delay(dur * 0.35, function()
+        tw(miolo, dur * 0.65, { Size = UDim2.new(0, 0, 0, 0), BackgroundTransparency = 1 })
+    end)
+    task.delay(dur + 0.1, function() miolo:Destroy() end)
+
+    local function raio(rot, compr, esp, corR)
+        local r = frame({
+            Size = UDim2.new(0, 0, 0, esp), AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
+            Rotation = rot, BackgroundColor3 = corR, BackgroundTransparency = 0, ZIndex = 1014,
+        }, G.fx)
+        novo("UIGradient", {
+            Transparency = NumberSequence.new({
+                NumberSequenceKeypoint.new(0, 1), NumberSequenceKeypoint.new(0.5, 0), NumberSequenceKeypoint.new(1, 1),
+            }),
+        }, r)
+        tw(r, dur * 0.4, { Size = UDim2.new(0, compr, 0, esp) }, Enum.EasingStyle.Quart)
+        task.delay(dur * 0.4, function()
+            tw(r, dur * 0.6, { Size = UDim2.new(0, compr * 1.25, 0, 0), BackgroundTransparency = 1 })
+        end)
+        task.delay(dur + 0.1, function() r:Destroy() end)
+    end
+    raio(0, diag * 1.2, 4, cor)
+    raio(90, diag * 0.7, 3, PALETA.Branco)
+    raio(45, diag * 0.35, 2, cor)
+    raio(-45, diag * 0.35, 2, cor)
+end
+
+local function ondaDiamante(cor, dur, atraso)
+    task.delay(atraso or 0, function()
+        if encerrado then return end
+        local diag = diagTela()
+        local f = frame({
+            Size = UDim2.fromOffset(0, 0), AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
+            Rotation = 45, ZIndex = 1011,
+        }, G.fx)
+        local st = novo("UIStroke", { Color = cor, Thickness = 5, Transparency = 0.15 }, f)
+        tw(f, dur, { Size = UDim2.fromOffset(diag, diag) }, Enum.EasingStyle.Quart)
+        tw(st, dur, { Transparency = 1, Thickness = 1 }, Enum.EasingStyle.Quart)
+        task.delay(dur + 0.05, function() f:Destroy() end)
+    end)
+end
+
+local function particulas2D(qtd, cores)
+    for _ = 1, N(qtd) do
+        local lado = math.random(4, 10)
+        local p = frame({
+            Size = UDim2.fromOffset(lado, lado), AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
+            Rotation = math.random(0, 90), BackgroundColor3 = pick(cores),
+            BackgroundTransparency = rf(0.05, 0.4), ZIndex = 1013,
+        }, G.fx)
+        local ang = math.random() * math.pi * 2
+        local dist = rf(0.35, 1.0)
+        local dur = rf(0.45, 0.9)
+        tw(p, dur, {
+            Position = UDim2.fromScale(0.5 + math.cos(ang) * dist, 0.5 + math.sin(ang) * dist),
+            BackgroundTransparency = 1, Size = UDim2.fromOffset(0, 0),
+            Rotation = p.Rotation + math.random(-180, 180),
+        }, Enum.EasingStyle.Quart)
+        task.delay(dur + 0.05, function() p:Destroy() end)
+    end
+end
+
+local function gradeDecrypt()
+    local cols, lins = N(16), N(9)
+    local cont = frame({ Size = TELA, ZIndex = 992, ClipsDescendants = true }, gui)
+    for c = 0, cols - 1 do
+        for l = 0, lins - 1 do
+            local r = math.random()
+            local cor, transp = PALETA.Escuro, 0.08
+            if r > 0.94 then cor, transp = PALETA.Ciano, 0.25
+            elseif r > 0.88 then cor, transp = PALETA.Magenta, 0.25 end
+            local cel = frame({
+                Size = UDim2.new(1 / cols, 1, 1 / lins, 1), Position = UDim2.new(c / cols, 0, l / lins, 0),
+                BackgroundColor3 = cor, BackgroundTransparency = transp, ZIndex = 992,
+            }, cont)
+            task.delay((c / cols) * 0.35 + math.random() * 0.25, function()
+                tw(cel, 0.18, { BackgroundTransparency = 1 })
+            end)
+        end
+    end
+    task.delay(1.0, function() cont:Destroy() end)
+end
+
+--=============================================================
+-- EFEITOS 3D
+--=============================================================
+local function novaParte(props)
+    local p = Instance.new("Part")
+    p.Anchored = true
+    p.CanCollide, p.CanTouch, p.CanQuery = false, false, false
+    p.CastShadow = false
+    p.Massless = true
+    p.Material = Enum.Material.Neon
+    p.TopSurface, p.BottomSurface = Enum.SurfaceType.Smooth, Enum.SurfaceType.Smooth
+    for k, v in pairs(props) do p[k] = v end
+    p.Parent = fxFolder
+    return p
+end
+
+local function alturaChao(pos, ignorar)
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    local lista = { fxFolder }
+    if ignorar then lista[#lista + 1] = ignorar end
+    params.FilterDescendantsInstances = lista
+    local r = workspace:Raycast(pos + Vector3.new(0, 2, 0), Vector3.new(0, -40, 0), params)
+    return r and (r.Position.Y + 0.15) or (pos.Y - 3)
+end
+
+local function feixeSatelite(pos, altura)
+    local alt = altura or 450
+    local centro = CFrame.new(pos + Vector3.new(0, alt / 2, 0)) * CFrame.Angles(0, 0, math.rad(90))
+    local halo = novaParte({ Shape = Enum.PartType.Cylinder, Size = Vector3.new(alt, 1, 1), CFrame = centro,
+                             Color = PALETA.Ciano, Transparency = 0.55 })
+    local nucleo = novaParte({ Shape = Enum.PartType.Cylinder, Size = Vector3.new(alt, 0.4, 0.4), CFrame = centro,
+                               Color = PALETA.Branco, Transparency = 0.05 })
+    tw(halo, 0.12, { Size = Vector3.new(alt, 9, 9) }, Enum.EasingStyle.Quint)
+    tw(nucleo, 0.12, { Size = Vector3.new(alt, 3, 3) }, Enum.EasingStyle.Quint)
+    task.delay(0.16, function()
+        tw(halo, 0.75, { Size = Vector3.new(alt, 0.3, 0.3), Transparency = 1 }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+        tw(nucleo, 0.6, { Size = Vector3.new(alt, 0.1, 0.1), Transparency = 1 }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+    end)
+    task.delay(1.1, function() halo:Destroy(); nucleo:Destroy() end)
+end
+
+local function discoChao(pos, cor, raio, dur, atraso)
+    task.delay(atraso or 0, function()
+        if encerrado then return end
+        local d = novaParte({ Shape = Enum.PartType.Cylinder, Size = Vector3.new(0.3, 2, 2),
+                              CFrame = CFrame.new(pos) * CFrame.Angles(0, 0, math.rad(90)),
+                              Color = cor, Transparency = 0.3 })
+        tw(d, dur, { Size = Vector3.new(0.3, raio * 2, raio * 2), Transparency = 1 }, Enum.EasingStyle.Quart)
+        task.delay(dur + 0.1, function() d:Destroy() end)
+    end)
+end
+
+local function luzFlash(pos, cor, dur)
+    local p = novaParte({ Size = Vector3.new(0.5, 0.5, 0.5), CFrame = CFrame.new(pos), Transparency = 1 })
+    local l = novo("PointLight", { Color = cor, Range = 40, Brightness = 10, Shadows = false }, p)
+    tw(l, dur, { Brightness = 0, Range = 12 })
+    task.delay(dur + 0.1, function() p:Destroy() end)
+end
+
+local function particulas3D(parteBase, qtd, cores)
+    local att = Instance.new("Attachment")
+    att.Parent = parteBase
+    local seq = {}
+    for i, cor in ipairs(cores) do
+        seq[i] = ColorSequenceKeypoint.new((i - 1) / math.max(#cores - 1, 1), cor)
+    end
+    novo("ParticleEmitter", {
+        Color = ColorSequence.new(seq), LightEmission = 1, Rate = 0,
+        Size = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0.7), NumberSequenceKeypoint.new(1, 0) }),
+        Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0), NumberSequenceKeypoint.new(1, 1) }),
+        Lifetime = NumberRange.new(0.5, 1.3), Speed = NumberRange.new(14, 34),
+        SpreadAngle = Vector2.new(180, 180), Drag = 3,
+        Rotation = NumberRange.new(0, 360), RotSpeed = NumberRange.new(-300, 300),
+    }, att)
+    local em = att:FindFirstChildOfClass("ParticleEmitter")
+    if em then pcall(function() em:Emit(N(qtd)) end) end
+    task.delay(2, function() att:Destroy() end)
+end
+
+local function listarPartes(character, semRaiz)
+    local lista = {}
+    for _, d in ipairs(character:GetDescendants()) do
+        if d:IsA("BasePart") and (not semRaiz or d.Name ~= "HumanoidRootPart") and d.Transparency < 0.95 then
+            lista[#lista + 1] = d
+        end
+    end
+    return lista
+end
+
+local function voxelDesintegrar(character)
+    local partes = listarPartes(character, true)
+    if #partes == 0 then return end
+
+    task.spawn(function()
+        local ini = os.clock()
+        while os.clock() - ini < 0.9 and not encerrado do
+            local a = (os.clock() - ini) / 0.9
+            for _, p in ipairs(partes) do
+                if p.Parent then
+                    p.LocalTransparencyModifier = math.min(1, a * 1.3 + (math.random() < 0.2 and 0.25 or 0))
+                end
+            end
+            task.wait(0.04)
+        end
+        for _, p in ipairs(partes) do
+            if p.Parent then p.LocalTransparencyModifier = 1 end
+        end
+    end)
+
+    for _ = 1, N(CONFIG.Morte.Voxels) do
+        local base = pick(partes)
+        local s = base.Size
+        local off = Vector3.new(rf(-0.5, 0.5) * s.X, rf(-0.5, 0.5) * s.Y, rf(-0.5, 0.5) * s.Z)
+        local pos = base.CFrame:PointToWorldSpace(off)
+        local tam = rf(0.18, 0.5)
+        local cubo = novaParte({ Size = Vector3.new(tam, tam, tam), CFrame = CFrame.new(pos),
+                                 Color = pick(NEONS), Transparency = rf(0, 0.25) })
+        local dir = Vector3.new(rf(-1, 1), rf(0.2, 1.4), rf(-1, 1))
+        if dir.Magnitude < 0.01 then dir = Vector3.new(0, 1, 0) end
+        local dest = pos + dir.Unit * rf(4, 13)
+        local dur = rf(0.7, 1.5)
+        tw(cubo, dur, {
+            CFrame = CFrame.new(dest) * CFrame.Angles(rf(0, 6.28), rf(0, 6.28), rf(0, 6.28)),
+            Size = Vector3.new(0.04, 0.04, 0.04), Transparency = 1,
+        }, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+        task.delay(dur + 0.1, function() cubo:Destroy() end)
+    end
+end
+
+local function voxelMaterializar(rp, qtd)
+    local centro = rp.Position
+    for _ = 1, N(qtd or CONFIG.Respawn.Voxels) do
+        local dir = Vector3.new(rf(-1, 1), rf(-0.3, 1), rf(-1, 1))
+        if dir.Magnitude < 0.01 then dir = Vector3.new(1, 0, 0) end
+        local ini = centro + dir.Unit * rf(10, 18)
+        local alvo = centro + Vector3.new(rf(-1.2, 1.2), rf(-2.5, 2.5), rf(-1.2, 1.2))
+        local tam = rf(0.2, 0.55)
+        local cubo = novaParte({ Size = Vector3.new(tam, tam, tam), CFrame = CFrame.new(ini),
+                                 Color = pick(NEONS), Transparency = 0.1 })
+        local dur = rf(0.35, 0.65)
+        tw(cubo, dur, {
+            CFrame = CFrame.new(alvo) * CFrame.Angles(rf(0, 6.28), rf(0, 6.28), rf(0, 6.28)),
+            Size = Vector3.new(0.05, 0.05, 0.05), Transparency = 0.8,
+        }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+        task.delay(dur + 0.1, function() cubo:Destroy() end)
+    end
+end
+
+local function highlightGlitch(character, dur)
+    local h = novo("Highlight", {
+        Adornee = character, FillColor = PALETA.Ciano, OutlineColor = PALETA.Branco,
+        FillTransparency = 0.3, OutlineTransparency = 0, DepthMode = Enum.HighlightDepthMode.AlwaysOnTop,
+    }, fxFolder)
+    local cores = { PALETA.Ciano, PALETA.Magenta, PALETA.Amarelo, PALETA.Branco }
+    local ini = os.clock()
+    while os.clock() - ini < dur and character.Parent and not encerrado do
+        local p = (os.clock() - ini) / dur
+        h.FillColor = pick(cores)
+        h.FillTransparency = 0.25 + 0.75 * p * p
+        h.OutlineTransparency = p * p
+        h.Enabled = math.random() > 0.15
+        task.wait(0.045)
+    end
+    h:Destroy()
+end
+
+local function piscarCorpo(character, dur)
+    local partes, originais = {}, {}
+    for _, d in ipairs(character:GetDescendants()) do
+        if d:IsA("BasePart") then
+            partes[#partes + 1] = d
+            originais[d] = d.LocalTransparencyModifier
+        end
+    end
+    local ini = os.clock()
+    while os.clock() - ini < dur and character.Parent and not encerrado do
+        local p = (os.clock() - ini) / dur
+        local v = (math.random() < (1 - p) * 0.8) and rf(0.4, 1) or 0
+        for _, part in ipairs(partes) do part.LocalTransparencyModifier = v end
+        task.wait(0.04)
+    end
+    for _, part in ipairs(partes) do
+        if part.Parent then part.LocalTransparencyModifier = originais[part] or 0 end
+    end
+end
+
+--=============================================================
+-- HUD (texto, ECG, barra)
+--=============================================================
+local CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789#$%&@<>/\\|"
+local revTokens = {}
+
+local function revelar(labels, alvo, dur)
+    local chave = labels[1]
+    revTokens[chave] = (revTokens[chave] or 0) + 1
+    local meu = revTokens[chave]
+    task.spawn(function()
+        local ini, n = os.clock(), #alvo
+        while not encerrado and revTokens[chave] == meu do
+            local p = (os.clock() - ini) / dur
+            if p >= 1 then break end
+            local fixos = math.floor(p * n)
+            local partes = { alvo:sub(1, fixos) }
+            for i = fixos + 1, n do
+                local ch = alvo:sub(i, i)
+                if ch == " " then
+                    partes[#partes + 1] = " "
+                else
+                    local r = math.random(#CHARS)
+                    partes[#partes + 1] = CHARS:sub(r, r)
+                end
+            end
+            local s = table.concat(partes)
+            for _, l in ipairs(labels) do l.Text = s end
+            task.wait(0.03)
+        end
+        if revTokens[chave] == meu then
+            for _, l in ipairs(labels) do l.Text = alvo end
+        end
+    end)
+end
+
+local function hexLinha(n)
+    local t = {}
+    for i = 1, n do
+        t[i] = string.format("%04X %06X %02X", math.random(0, 65535), math.random(0, 16777215), math.random(0, 255))
+    end
+    return table.concat(t, "\n")
+end
+
+local function ecgValor(fase)
+    if fase < 0.10 then return 0.12 * math.sin(fase / 0.10 * math.pi)
+    elseif fase < 0.16 then return 0
+    elseif fase < 0.19 then return -0.18
+    elseif fase < 0.23 then return 1.0
+    elseif fase < 0.27 then return -0.35
+    elseif fase < 0.34 then return 0
+    elseif fase < 0.50 then return 0.22 * math.sin((fase - 0.34) / 0.16 * math.pi)
+    end
+    return 0
+end
+
+local function iniciarHudMorte(ciclo)
+    if not CONFIG.Hud.Ativo then return end
+    if hudConn then hudConn:Disconnect(); hudConn = nil end
+    local M = CONFIG.Morte
+    local lista = { G.titulo, G.tituloR, G.tituloC }
+
+    G.hud.Visible = true
+    G.titStroke.Color = PALETA.Vermelho
+    G.tituloR.TextColor3 = PALETA.Vermelho
+    G.tituloC.TextColor3 = PALETA.Ciano
+    G.barraBg.Visible = false
+    G.barraFill.Size = UDim2.new(0, 0, 1, 0)
+    G.barraTag.Text, G.barraPct.Text = "", ""
+    G.ecg.Visible = M.ECG and true or false
+    for _, p in ipairs(G.ecgPts) do p.BackgroundColor3 = PALETA.Verde end
+    G.hexL.Visible, G.hexR.Visible = true, true
+
+    if CONFIG.Hud.Textos then
+        revelar(lista, "SIGNAL LOST", 0.55)
+        revelar({ G.sub }, "NEURAL LINK SEVERED", 0.6)
+    else
+        for _, l in ipairs(lista) do l.Text = "" end
+        G.sub.Text = ""
+    end
+
+    local okRT, rt = pcall(function() return Players.RespawnTime end)
+    local tempoEst = math.max((okRT and tonumber(rt)) or 5, 1.5)
+    local ini = os.clock()
+    local ultHex, ultEcg, fase, flat = 0, 0, 0, false
+    local mostrouBarra = false
+    local amostras = {}
+    for i = 1, ECG_N do amostras[i] = 0 end
+
+    local conn
+    conn = RunService.RenderStepped:Connect(function()
+        if encerrado or cicloAtual ~= ciclo or not emMorte then
+            conn:Disconnect()
+            if hudConn == conn then hudConn = nil end
+            return
+        end
+        local t = os.clock() - ini
+
+        G.roll.Position = UDim2.new(0, 0, ((t * 0.45) % 1.3) - 0.2, 0)
+
+        if math.random() < 0.07 then
+            G.tituloR.Position = UDim2.new(0.5, -math.random(3, 12), 0.40, math.random(-3, 3))
+            G.tituloC.Position = UDim2.new(0.5, math.random(3, 12), 0.40, math.random(-3, 3))
+        else
+            G.tituloR.Position = UDim2.new(0.5, -4, 0.40, 0)
+            G.tituloC.Position = UDim2.new(0.5, 4, 0.40, 0)
+        end
+
+        if t > 1.1 then
+            if not mostrouBarra then
+                mostrouBarra = true
+                G.barraBg.Visible = true
+                G.barraTag.Text = "CAPRI.EXE"
+                if CONFIG.Hud.Textos then revelar({ G.sub }, "RECONSTRUCTING CONSTRUCT", 0.6) end
+            end
+            local x = (t - 1.1) / math.max(tempoEst - 1.1, 1)
+            local prog = 0.97 * (1 - math.exp(-2.2 * x))
+            G.barraFill.Size = UDim2.new(prog, 0, 1, 0)
+            G.barraPct.Text = string.format("%d%%", math.floor(prog * 100))
+        end
+
+        if t - ultHex > 0.08 then
+            ultHex = t
+            G.hexL.Text = hexLinha(18)
+            G.hexR.Text = hexLinha(18)
+        end
+
+        if M.ECG and t - ultEcg > 0.025 then
+            ultEcg = t
+            local v
+            if t < 0.9 then
+                fase = (fase + 0.025 / 0.55) % 1
+                v = ecgValor(fase)
+            else
+                v = (math.random() - 0.5) * 0.02
+                if not flat then
+                    flat = true
+                    for _, p in ipairs(G.ecgPts) do p.BackgroundColor3 = PALETA.Vermelho end
+                end
+            end
+            table.remove(amostras, 1)
+            amostras[#amostras + 1] = v
+            for i = 1, ECG_N do
+                G.ecgPts[i].Position = UDim2.new((i - 1) / (ECG_N - 1), 0, 0.5 - amostras[i] * 0.45, 0)
+            end
+        end
+    end)
+    hudConn = conn
+end
+
+local function hudRespawn(ciclo)
+    if not CONFIG.Hud.Ativo then return end
+    local lista = { G.titulo, G.tituloR, G.tituloC }
+
+    G.hud.Visible = true
+    G.ecg.Visible = false
+    G.hexL.Visible, G.hexR.Visible = false, false
+    G.titStroke.Color = PALETA.Ciano
+    G.tituloR.TextColor3 = PALETA.Magenta
+    G.tituloC.TextColor3 = PALETA.Ciano
+    G.tituloR.Position = UDim2.new(0.5, -4, 0.40, 0)
+    G.tituloC.Position = UDim2.new(0.5, 4, 0.40, 0)
+    G.barraBg.Visible = true
+    G.barraTag.Text = "CAPRI.EXE"
+    G.barraPct.Text = "100%"
+    tw(G.barraFill, 0.18, { Size = UDim2.new(1, 0, 1, 0) })
+
+    if CONFIG.Hud.Textos then
+        local nome = string.upper((player.DisplayName:gsub("[^%w _%-]", "")))
+        if nome == "" then nome = "NETRUNNER" end
+        revelar(lista, "CONSTRUCT ONLINE", 0.5)
+        revelar({ G.sub }, "WELCOME BACK, " .. nome, 0.55)
+    else
+        for _, l in ipairs(lista) do l.Text = "" end
+        G.sub.Text = ""
+    end
+
+    task.delay(1.7, function()
+        if encerrado or cicloAtual ~= ciclo or emMorte then return end
+        for _ = 1, 3 do
+            G.hud.Visible = false; task.wait(0.04)
+            G.hud.Visible = true;  task.wait(0.04)
+        end
+        if cicloAtual == ciclo and not emMorte then G.hud.Visible = false end
+    end)
+end
+
+--=============================================================
+-- SEQUÊNCIAS MORTE / RESPAWN
+--=============================================================
+local function sequenciaMorte(character, ciclo)
+    local M = CONFIG.Morte
+    emMorte = true
+    local camera = workspace.CurrentCamera
+    if camera and not fovOriginal then fovOriginal = camera.FieldOfView end
+
+    audioMorte()
+
+    if M.Flash then
+        flashTela(PALETA.Branco, 0.12, 0)
+        task.delay(0.06, function() flashTela(PALETA.Vermelho, 0.45, 0.35) end)
+    end
+    if M.Escurecer then tw(G.escuro, 0.9, { BackgroundTransparency = 0.5 }) end
+    if M.Letterbox then letterbox(true, 0.45) end
+    if M.ColorGrade then gradeMorte() end
+    if M.Bloom then pulso(efl.bloom, "Intensity", 2.4, 0.9) end
+    if M.Blur then pulso(efl.blur, "Size", 22, 1.0) end
+    if M.Vinheta then vinhetaSet(PALETA.Vermelho, 0.3, 0.35) end
+    if M.Aberracao then aberracao(0.6, 12) end
+    if M.Scanlines then G.scan.Visible = true end
+    if M.Shake then camShake(3.0, 0.65, true) end
+    if M.Zoom and camera then camFov(camera.FieldOfView, (fovOriginal or 70) - 12, 2.4) end
+    if M.Glitch then glitchBlocos(0.8, 16) end
+    if M.Voxels > 0 then seguro(voxelDesintegrar, character) end
+    if M.Particulas then
+        local rp = character:FindFirstChild("HumanoidRootPart")
+        if rp then particulas3D(rp, 90, { PALETA.Vermelho, PALETA.Magenta, PALETA.Verde }) end
+    end
+    seguro(iniciarHudMorte, ciclo)
+end
+
+local function sequenciaRespawn(character, ciclo)
+    local R = CONFIG.Respawn
+    local rp = character:FindFirstChild("HumanoidRootPart")
+    if not rp then return end
+    local pos = rp.Position
+    local chao = Vector3.new(pos.X, alturaChao(pos, character), pos.Z)
+    local camera = workspace.CurrentCamera
+
+    emMorte = false
+    if hudConn then hudConn:Disconnect(); hudConn = nil end
+    local fov0 = fovOriginal or (camera and camera.FieldOfView) or 70
+
+    audioRespawn()
+
+    if R.GradeDecrypt then
+        G.escuro.BackgroundTransparency = 1
+        gradeDecrypt()
+    else
+        tw(G.escuro, 0.5, { BackgroundTransparency = 1 })
+    end
+    if R.Flash then flashTela(PALETA.Branco, 0.25, 0.05) end
+    letterbox(false, 0.55)
+    vinhetaSet(PALETA.Vermelho, 1, 0.5)
+    if R.ColorGrade then gradeRespawn() else resetGrade(0.5) end
+    if R.Bloom then pulso(efl.bloom, "Intensity", 3, 0.9) end
+    if R.Blur then pulso(efl.blur, "Size", 16, 0.5) end
+    if R.Aberracao then aberracao(0.7, 16, 0.55) end
+    if R.Scanlines then
+        G.scan.Visible = true
+        task.delay(0.6, function() if not emMorte then G.scan.Visible = false end end)
+    else
+        G.scan.Visible = false
+    end
+    if R.Shake then camShake(1.6, 0.45, false) end
+    if camera then
+        if R.PunchFOV then
+            camFov(fov0 + 40, fov0, 0.8, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+        else
+            camFov(camera.FieldOfView, fov0, 0.4)
+        end
+    end
+    task.delay(1.2, function() if not emMorte then fovOriginal = nil end end)
+
+    if R.EstrelaFlare then estrelaFlare(PALETA.Ciano, 0.9) end
+    for i = 1, R.Ondas do
+        ondaDiamante((i % 2 == 0) and PALETA.Magenta or PALETA.Ciano, 0.7, 0.07 * (i - 1))
+    end
+    if R.Particulas then particulas2D(70, { PALETA.Ciano, PALETA.Magenta, PALETA.Amarelo, PALETA.Branco }) end
+
+    if R.Voxels > 0 then seguro(voxelMaterializar, rp) end
+    if R.Feixe then feixeSatelite(chao) end
+    if R.DiscosChao then
+        discoChao(chao, PALETA.Ciano, 16, 0.8, 0.05)
+        discoChao(chao, PALETA.Magenta, 24, 0.9, 0.17)
+        discoChao(chao, PALETA.Branco, 10, 0.5, 0.30)
+    end
+    if R.Luz then luzFlash(pos, PALETA.Ciano, 0.9) end
+    if R.Highlight then seguro(highlightGlitch, character, 1.0) end
+    if R.PiscarCorpo then seguro(piscarCorpo, character, 0.7) end
+    if R.Particulas then particulas3D(rp, 70, { PALETA.Verde, PALETA.Magenta, PALETA.Ciano }) end
+
+    seguro(hudRespawn, ciclo)
+end
+
+--=============================================================
+-- FREEZE
+--=============================================================
+local FREEZE_BIND = "CapriFreezeInput"
+
+local function limparFreeze()
+    for _, c in ipairs(freezeConexoes) do pcall(function() c:Disconnect() end) end
+    freezeConexoes = {}
+    pcall(function() RunService:UnbindFromRenderStep(FREEZE_BIND) end)
+end
+
+local function iniciarFreeze(character, duracao, semCamera)
+    local F = CONFIG.Freeze
+    if not F.Ativo then return end
+    freezeToken = freezeToken + 1
+    local meu = freezeToken
+    freezeAtivo = true
+    limparFreeze()
+
+    local hum = character:FindFirstChildOfClass("Humanoid")
+    local rp = character:FindFirstChild("HumanoidRootPart")
+    local camera = workspace.CurrentCamera
+    if not (hum and rp and camera) then freezeAtivo = false; return end
+
+    if F.Camera and not semCamera then camCongelar(camera.CFrame) end
+
+    if F.Movimento or F.Pulo then
+        RunService:BindToRenderStep(FREEZE_BIND, 250, function()
+            if freezeAtivo and freezeToken == meu and hum.Parent then
+                if F.Movimento then pcall(function() hum:Move(Vector3.zero, false) end) end
+                if F.Pulo then hum.Jump = false end
+            end
+        end)
+    end
+
+    freezeConexoes[#freezeConexoes + 1] = RunService.Heartbeat:Connect(function()
+        if freezeAtivo and freezeToken == meu and rp.Parent then
+            rp.AssemblyLinearVelocity = Vector3.zero
+            rp.AssemblyAngularVelocity = Vector3.zero
+        end
+    end)
+
+    task.delay(duracao, function()
+        if freezeToken ~= meu then return end
+        freezeAtivo = false
+        limparFreeze()
+        camCongelar(nil)
+    end)
+end
+
+--=============================================================
+-- 🎭 MORPH — KinxCaesar · SÓ R6 (integrado do Char.txt)
+--=============================================================
+local function obterMorphDesc()
+    if morphDescCache then return morphDescCache end
+
+    local entrada = CONFIG.Morph.Username
+    if not entrada or entrada == "" then return nil end
+
+    -- ✅ Aceita username OU ID numérico
+    local id = tonumber(entrada)
+    if not id then
+        local okId, res = pcall(function() return Players:GetUserIdFromNameAsync(entrada) end)
+        if okId and res then id = res end
+    end
+    if not id then return nil end
+
+    local okD, desc = pcall(function() return Players:GetHumanoidDescriptionFromUserId(id) end)
+    if not okD or not desc then return nil end
+
+    morphDescCache = desc
+    return desc
+end
+
+local function aplicarMorph()
+    if not CONFIG.Morph.Ativo then return false end
+
+    local character = player.Character
+    if not character or not character.Parent then return false end
+
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    if not humanoid then return false end
+
+    -- ⛔ BLOQUEIO R6 (com aviso único)
+    if humanoid.RigType ~= Enum.HumanoidRigType.R6 then
+        if not avisoR15JaMostrado then
+            avisoR15JaMostrado = true
+            if CONFIG.DEBUG then
+                warn("[Capri] 🚫 Morph bloqueado: personagem é R15 (só funciona em R6)")
+            end
+        end
+        return false
+    end
+
+    local desc = obterMorphDesc()
+    if not desc then return false end
+
+    -- Força R6 (garantido pelo bloqueio acima)
+    local okM, gen = pcall(function()
+        return Players:CreateHumanoidModelFromDescription(desc, Enum.HumanoidRigType.R6)
+    end)
+    if not okM or not gen then return false end
+
+    for _, item in ipairs(character:GetChildren()) do
+        if item:IsA("Accessory") or item:IsA("Clothing") or item:IsA("ShirtGraphic")
+        or item:IsA("BodyColors") or item:IsA("CharacterMesh") then
+            pcall(function() item:Destroy() end)
+        end
+    end
+
+    for _, item in ipairs(gen:GetChildren()) do
+        local ex = character:FindFirstChild(item.Name)
+        if ex and ex:IsA("BasePart") and ex.Name ~= "HumanoidRootPart" then
+            pcall(function() ex.Color = item.Color end)
+        end
+    end
+
+    local tHead, cHead = gen:FindFirstChild("Head"), character:FindFirstChild("Head")
+    if tHead and cHead then
+        local oldF = cHead:FindFirstChildOfClass("Decal"); if oldF then oldF:Destroy() end
+        local nF = tHead:FindFirstChildOfClass("Decal")
+        if nF then
+            nF:Clone().Parent = cHead
+        else
+            local def = Instance.new("Decal"); def.Name = "face"
+            def.Texture = "rbxasset://textures/face.png"; def.Parent = cHead
+        end
+        local oldM = cHead:FindFirstChildOfClass("SpecialMesh"); if oldM then oldM:Destroy() end
+        local nM = tHead:FindFirstChildOfClass("SpecialMesh"); if nM then nM:Clone().Parent = cHead end
+    end
+
+    for _, item in ipairs(gen:GetChildren()) do
+        if item:IsA("Clothing") or item:IsA("ShirtGraphic") or item:IsA("BodyColors") or item:IsA("CharacterMesh") then
+            pcall(function() item:Clone().Parent = character end)
+        elseif item:IsA("Accessory") then
+            local cl = item:Clone()
+            local h = cl:FindFirstChild("Handle")
+            if h then
+                local att = h:FindFirstChildOfClass("Attachment")
+                if att then
+                    local tAtt = character:FindFirstChild(att.Name, true)
+                    if tAtt then
+                        h.CFrame = tAtt.WorldCFrame
+                        local w = Instance.new("Weld")
+                        w.Name = "AccessoryWeld"
+                        w.Part0, w.Part1 = h, tAtt.Parent
+                        w.C0, w.C1 = att.CFrame, tAtt.CFrame
+                        w.Parent = h
+                    end
+                end
+            end
+            pcall(function() cl.Parent = character end)
+        end
+    end
+    gen:Destroy()
+    return true
+end
+
+--=============================================================
+-- UTILITÁRIOS DOS MÓDULOS NOVOS
+--=============================================================
+local function ehAscii(s) return not s:find("[\128-\255]") end
+
+local function nomeLimpo()
+    local n = string.upper((player.DisplayName:gsub("[^%w _%-]", "")))
+    if n == "" then n = string.upper((player.Name:gsub("[^%w _%-]", ""))) end
+    if n == "" then n = "NETRUNNER" end
+    return n
+end
+
+local function embaralhar(s, taxa)
+    local t = {}
+    for i = 1, #s do
+        local ch = s:sub(i, i)
+        if ch ~= " " and math.random() < taxa then
+            local r = math.random(#CHARS)
+            t[i] = CHARS:sub(r, r)
+        else
+            t[i] = ch
+        end
+    end
+    return table.concat(t)
+end
+
+local function trim(s) return (s:gsub("^%s+", ""):gsub("%s+$", "")) end
+
+local function chaveServidor()
+    local ok, id = pcall(function() return game.JobId end)
+    if ok and id and id ~= "" then return id end
+    return "place_" .. tostring(game.PlaceId)
+end
+
+local introEstado = "nenhuma"      -- "nenhuma" | "pendente" | "rodando" | "feita"
+local introPermitida = CONFIG.Intro.Ativo
+if introPermitida and CONFIG.Intro.UmaVezPorServidor and genv.__CapriIntroServidor == chaveServidor() then
+    introPermitida = false
+end
+
+-- controla a transparência local do corpo (flicker / sumir / voltar)
+local function capturarCorpo(character)
+    local partes, orig = {}, {}
+    for _, d in ipairs(character:GetDescendants()) do
+        if d:IsA("BasePart") then
+            partes[#partes + 1] = d
+            orig[d] = d.LocalTransparencyModifier
+        end
+    end
+    local c = {}
+    function c.aplicar(v)
+        for _, p in ipairs(partes) do
+            if p.Parent then p.LocalTransparencyModifier = v end
+        end
+    end
+    function c.restaurar()
+        for _, p in ipairs(partes) do
+            if p.Parent then p.LocalTransparencyModifier = orig[p] or 0 end
+        end
+    end
+    return c
+end
+
+-- explosão de voxels neon num ponto
+local function voxelBurst(pos, qtd, raioMin, raioMax)
+    for _ = 1, N(qtd) do
+        local dir = Vector3.new(rf(-1, 1), rf(-0.2, 1.2), rf(-1, 1))
+        if dir.Magnitude < 0.01 then dir = Vector3.new(0, 1, 0) end
+        local ini = pos + Vector3.new(rf(-1, 1), rf(-2, 2), rf(-1, 1))
+        local tam = rf(0.18, 0.5)
+        local cubo = novaParte({ Size = Vector3.new(tam, tam, tam), CFrame = CFrame.new(ini),
+                                 Color = pick(NEONS), Transparency = rf(0, 0.2) })
+        local dur = rf(0.45, 1.0)
+        tw(cubo, dur, {
+            CFrame = CFrame.new(ini + dir.Unit * rf(raioMin or 5, raioMax or 14)) * CFrame.Angles(rf(0, 6.28), rf(0, 6.28), 0),
+            Size = Vector3.new(0.04, 0.04, 0.04), Transparency = 1,
+        }, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+        task.delay(dur + 0.1, function() cubo:Destroy() end)
+    end
+end
+
+-- aviso curto no topo da tela
+G.toast = texto({
+    Size = UDim2.new(0.8, 0, 0, 24), AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 14),
+    Font = Enum.Font.Code, TextScaled = true, TextColor3 = PALETA.Ciano, TextTransparency = 1, ZIndex = 1058,
+}, gui)
+novo("UITextSizeConstraint", { MaxTextSize = 18, MinTextSize = 10 }, G.toast)
+novo("UIStroke", { Color = Color3.new(0, 0, 0), Thickness = 1.5, Transparency = 0.3 }, G.toast)
+
+local toastToken = 0
+local function toast(msg, cor)
+    toastToken = toastToken + 1
+    local meu = toastToken
+    G.toast.TextColor3 = cor or PALETA.Ciano
+    G.toast.TextTransparency = 0
+    if ehAscii(msg) then revelar({ G.toast }, msg, 0.35) else G.toast.Text = msg end
+    task.delay(2.6, function()
+        if toastToken == meu and G.toast.Parent then tw(G.toast, 0.4, { TextTransparency = 1 }) end
+    end)
+end
+
+local function terminarFreeze()
+    freezeAtivo = false
+    freezeToken = freezeToken + 1
+    limparFreeze()
+    camCongelar(nil)
+end
+
+-- InputObjects que começaram em cima do MENU (os taunts por clique ignoram esses)
+local guiInputs = setmetatable({}, { __mode = "k" })
+
+--=============================================================
+-- LISTA RÁPIDA: AMIGOS (sempre no topo) + ALVOS RECENTES
+--  · amigos = amigos da SUA conta do Roblox que estão no servidor
+--  · recentes = últimos jogadores para quem você deu TP (salvos em
+--    arquivo se o executor tiver writefile/readfile)
+--=============================================================
+local HttpService = svc("HttpService")
+
+local LISTA = {
+    amigo = {},          -- [userId] = true/false (cache)
+    naFila = {},         -- [userId] = true (já aguardando checagem)
+    tentativas = {},
+    fila = {},
+    rodando = false,
+    recentes = {},       -- { { userId=, name=, display= }, ... } mais recente primeiro
+    aoMudar = nil,       -- função chamada quando a lista muda (a UI preenche)
+}
+
+-- true/false se já sabemos; se ainda não, agenda a checagem e devolve false por enquanto
+function LISTA.ehAmigo(p)
+    local id = p.UserId
+    local v = LISTA.amigo[id]
+    if v == nil and not LISTA.naFila[id] then
+        LISTA.naFila[id] = true
+        LISTA.fila[#LISTA.fila + 1] = id
+        LISTA.processar()
+    end
+    return v == true
+end
+
+-- checa um por vez (evita estourar o limite da API de amizades)
+function LISTA.processar()
+    if LISTA.rodando then return end
+    LISTA.rodando = true
+    task.spawn(function()
+        while not encerrado and #LISTA.fila > 0 do
+            local id = table.remove(LISTA.fila, 1)
+            local ok, r = pcall(function() return player:IsFriendsWith(id) end)
+            if ok then
+                LISTA.amigo[id] = (r == true)
+                LISTA.naFila[id] = nil
+                if r == true and LISTA.aoMudar then LISTA.aoMudar() end
+            else
+                local n = (LISTA.tentativas[id] or 0) + 1
+                LISTA.tentativas[id] = n
+                if n < 3 then
+                    task.delay(1.5, function()
+                        if encerrado then return end
+                        LISTA.fila[#LISTA.fila + 1] = id
+                        LISTA.processar()
+                    end)
+                else
+                    LISTA.amigo[id] = false
+                    LISTA.naFila[id] = nil
+                end
+            end
+            task.wait(0.12)
+        end
+        LISTA.rodando = false
+    end)
+end
+
+function LISTA.carregar()
+    if not CONFIG.Lista.Salvar then return end
+    if not (isfile and readfile) then return end
+    local ok, dados = pcall(function()
+        if isfile(CONFIG.Lista.Arquivo) then
+            return HttpService:JSONDecode(readfile(CONFIG.Lista.Arquivo))
+        end
+        return nil
+    end)
+    if ok and type(dados) == "table" then
+        for _, r in ipairs(dados) do
+            if type(r) == "table" and tonumber(r.userId) and type(r.name) == "string" then
+                LISTA.recentes[#LISTA.recentes + 1] = {
+                    userId = tonumber(r.userId), name = r.name, display = tostring(r.display or r.name),
+                }
+                if #LISTA.recentes >= CONFIG.Lista.Recentes then break end
+            end
+        end
+    end
+end
+
+function LISTA.salvar()
+    if not CONFIG.Lista.Salvar or not writefile then return end
+    pcall(function()
+        writefile(CONFIG.Lista.Arquivo, HttpService:JSONEncode(LISTA.recentes))
+    end)
+end
+
+-- chamado quando um TP dá certo: o alvo vai para o topo dos recentes
+function LISTA.registrar(p)
+    for i = #LISTA.recentes, 1, -1 do
+        if LISTA.recentes[i].userId == p.UserId then table.remove(LISTA.recentes, i) end
+    end
+    table.insert(LISTA.recentes, 1, { userId = p.UserId, name = p.Name, display = p.DisplayName })
+    while #LISTA.recentes > CONFIG.Lista.Recentes do table.remove(LISTA.recentes) end
+    LISTA.salvar()
+    if LISTA.aoMudar then LISTA.aoMudar() end
+end
+
+function LISTA.posicaoRecente(userId)   -- 1 = mais recente
+    for i, r in ipairs(LISTA.recentes) do
+        if r.userId == userId then return i end
+    end
+    return nil
+end
+
+-- devolve (amigos, recentes) presentes no servidor; AMIGOS SEMPRE PRIMEIRO
+function LISTA.montar()
+    local amigos, recs = {}, {}
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= player then
+            local ri = LISTA.posicaoRecente(p.UserId)
+            if LISTA.ehAmigo(p) then
+                amigos[#amigos + 1] = { player = p, rec = ri or 1e9 }
+            elseif ri then
+                recs[#recs + 1] = { player = p, rec = ri }
+            end
+        end
+    end
+    table.sort(amigos, function(a, b)
+        if a.rec ~= b.rec then return a.rec < b.rec end   -- amigo que você visitou há pouco vem antes
+        return a.player.DisplayName:lower() < b.player.DisplayName:lower()
+    end)
+    table.sort(recs, function(a, b) return a.rec < b.rec end)
+    return amigos, recs
+end
+
+pcall(LISTA.carregar)
+for _, p in ipairs(Players:GetPlayers()) do
+    if p ~= player then LISTA.ehAmigo(p) end
+end
+rastrear(Players.PlayerAdded:Connect(function(p)
+    if p ~= player then LISTA.ehAmigo(p) end
+    if LISTA.aoMudar then LISTA.aoMudar() end
+end))
+rastrear(Players.PlayerRemoving:Connect(function()
+    if LISTA.aoMudar then LISTA.aoMudar() end
+end))
+
+--=============================================================
+-- TELEPORTE ATRÁS DO JOGADOR (efeitos + sons)
+--=============================================================
+local tpCooldownAte = 0
+local tpOcupado = false
+
+local function posicaoAtras(aChar, dist)
+    local tRoot = aChar:FindFirstChild("HumanoidRootPart")
+    if not tRoot then return nil end
+    local base = tRoot.CFrame
+    local look = Vector3.new(base.LookVector.X, 0, base.LookVector.Z)
+    if look.Magnitude < 0.05 then look = Vector3.new(0, 0, -1) end
+    look = look.Unit
+    local origem = base.Position
+    local desejado = origem - look * dist
+
+    local ignorar = { aChar, fxFolder }
+    if player.Character then ignorar[#ignorar + 1] = player.Character end
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    params.FilterDescendantsInstances = ignorar
+    local dir = desejado - origem
+    local r = workspace:Raycast(origem, dir, params)
+    if r then desejado = r.Position - dir.Unit * 1.2 end   -- parede atrás do alvo: fica logo na frente dela
+
+    return CFrame.lookAt(desejado, desejado + look)         -- olhando na mesma direção do alvo (para as costas dele)
+end
+
+local function teleportarAtras(alvo)
+    if encerrado or tpOcupado then return false end
+    local t0 = os.clock()
+    if t0 < tpCooldownAte then return false end
+
+    local meuChar = player.Character
+    local meuRoot = meuChar and meuChar:FindFirstChild("HumanoidRootPart")
+    local hum = meuChar and meuChar:FindFirstChildOfClass("Humanoid")
+    if not (meuRoot and hum) or hum.Health <= 0 then
+        toast("SIGNAL LOST // CANNOT LINK", PALETA.Vermelho)
+        sfx.erro()
+        return false
+    end
+
+    local aChar = alvo and alvo.Character
+    local aRoot = aChar and aChar:FindFirstChild("HumanoidRootPart")
+    if not aRoot then
+        toast("TARGET OFFLINE // NO CONSTRUCT", PALETA.Vermelho)
+        sfx.erro()
+        return false
+    end
+
+    local destino = posicaoAtras(aChar, CONFIG.TP.Distancia)
+    if not destino then return false end
+
+    tpOcupado = true
+    tpCooldownAte = t0 + CONFIG.TP.Cooldown + 0.9
+    local corpo = capturarCorpo(meuChar)
+
+    local ok, err = pcall(function()
+        local camera = workspace.CurrentCamera
+        local fov0 = camera and camera.FieldOfView or 70
+        local origem = meuRoot.Position
+        local E = CONFIG.TP.Efeitos
+
+        -- SAÍDA
+        if E then
+            sfx.tpSaida()
+            flashTela(PALETA.Ciano, 0.25, 0.25)
+            aberracao(0.45, 14, 0.5)
+            glitchBlocos(0.3, 12)
+            voxelBurst(origem, 50, 5, 14)
+            discoChao(Vector3.new(origem.X, alturaChao(origem, meuChar), origem.Z), PALETA.Magenta, 12, 0.6, 0)
+            luzFlash(origem, PALETA.Magenta, 0.5)
+            feixeSatelite(origem, 120)
+            if camera then camFov(camera.FieldOfView, fov0 - 14, 0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.In) end
+            camShake(1.4, 0.25, true)
+            local ini = os.clock()
+            while os.clock() - ini < 0.2 and meuChar.Parent do
+                corpo.aplicar(math.min(1, (os.clock() - ini) / 0.2 * 1.2 + (math.random() < 0.3 and 0.2 or 0)))
+                task.wait(0.03)
+            end
+            corpo.aplicar(1)
+        end
+
+        -- TELEPORTE (recalcula: o alvo pode ter andado)
+        if not (meuChar.Parent and aChar.Parent and aRoot.Parent) then return end
+        destino = posicaoAtras(aChar, CONFIG.TP.Distancia) or destino
+        local okPivot = pcall(function() meuChar:PivotTo(destino) end)
+        if not okPivot then meuRoot.CFrame = destino end
+        meuRoot.AssemblyLinearVelocity = Vector3.zero
+        meuRoot.AssemblyAngularVelocity = Vector3.zero
+
+        -- CHEGADA
+        local pos = destino.Position
+        if E then
+            sfx.tpChegada()
+            flashTela(PALETA.Branco, 0.3, 0.1)
+            local chao = Vector3.new(pos.X, alturaChao(pos, meuChar), pos.Z)
+            voxelMaterializar(meuRoot, 55)
+            feixeSatelite(chao, 160)
+            discoChao(chao, PALETA.Ciano, 16, 0.8, 0.05)
+            discoChao(chao, PALETA.Magenta, 22, 0.9, 0.15)
+            luzFlash(pos, PALETA.Ciano, 0.8)
+            estrelaFlare(PALETA.Magenta, 0.7)
+            ondaDiamante(PALETA.Ciano, 0.6, 0)
+            ondaDiamante(PALETA.Magenta, 0.6, 0.08)
+            particulas3D(meuRoot, 60, { PALETA.Ciano, PALETA.Magenta, PALETA.Amarelo })
+            pulso(efl.bloom, "Intensity", 2.4, 0.7)
+            aberracao(0.55, 14, 0.5)
+            camShake(1.8, 0.4, false)
+            if camera then camFov(fov0 + 30, fov0, 0.7, Enum.EasingStyle.Quint, Enum.EasingDirection.Out) end
+            seguro(highlightGlitch, meuChar, 0.9)
+            local ini = os.clock()
+            while os.clock() - ini < 0.6 and meuChar.Parent do
+                local p = (os.clock() - ini) / 0.6
+                corpo.aplicar((math.random() < (1 - p) * 0.8) and rf(0.4, 1) or 0)
+                task.wait(0.04)
+            end
+        end
+
+        LISTA.registrar(alvo)
+        toast("LINK ESTABLISHED // " .. (ehAscii(alvo.DisplayName) and string.upper(alvo.DisplayName) or alvo.DisplayName)
+              .. " (@" .. alvo.Name .. ")", PALETA.Ciano)
+    end)
+
+    corpo.restaurar()
+    tpOcupado = false
+    if not ok then warn("[Capri TP] erro:", err) end
+    return ok
+end
+
+--=============================================================
+-- MENU (responsivo, arrastável, abas: TP / LIST / AURA)
+--=============================================================
+local MN = {
+    aberto = false, cx = 0, cy = 0, escala = 1,
+    alvo = nil, alvoTexto = "", ultimoAlvo = nil,
+    autoPreenchendo = false, animToken = 0, loopConn = nil,
+    chips = {}, niveis = {}, abas = {}, pags = {}, toggles = {}, linhasLista = {},
+    aba = "tp", cyAntesTeclado = nil, listaSujo = false,
+}
+local abrirMenu, fecharMenu, alternarMenu
+
+do
+    local BW, BH = 340, 372
+    local ZM = 1050
+    local trocarAba, atualizarLista, selecionarJogador   -- declaradas antes (referências circulares)
+
+    local function viewport()
+        local c = workspace.CurrentCamera
+        if c then return c.ViewportSize.X, c.ViewportSize.Y end
+        return 1280, 720
+    end
+
+    local function calcEscala()
+        local vw, vh = viewport()
+        local s = math.min(1.25, (vw * 0.92) / BW, (vh * 0.9) / BH)
+        return math.max(0.5, s), vw, vh
+    end
+
+    local function tamanhoMenu()
+        return math.floor(BW * MN.escala + 0.5), math.floor(BH * MN.escala + 0.5)
+    end
+
+    local function limitarPos(cx, cy, w, h)
+        local vw, vh = viewport()
+        cx = math.clamp(cx, w / 2 + 2, math.max(w / 2 + 2, vw - w / 2 - 2))
+        cy = math.clamp(cy, h / 2 + 2, math.max(h / 2 + 2, vh - h / 2 - 2))
+        return cx, cy
+    end
+
+    local function botao(props, pai)
+        local p = {
+            BackgroundColor3 = Color3.fromRGB(16, 12, 38), BackgroundTransparency = 0.15, BorderSizePixel = 0,
+            AutoButtonColor = false, Font = Enum.Font.Code, TextSize = 13, TextColor3 = PALETA.Ciano, Text = "",
+        }
+        for k, v in pairs(props) do p[k] = v end
+        return novo("TextButton", p, pai)
+    end
+
+    local function ligarBotao(b, fn, semSom)
+        rastrear(b.MouseEnter:Connect(function()
+            if not semSom then sfx.hover() end
+            tw(b, 0.1, { BackgroundTransparency = 0 })
+        end))
+        rastrear(b.MouseLeave:Connect(function() tw(b, 0.15, { BackgroundTransparency = 0.15 }) end))
+        rastrear(b.Activated:Connect(function()
+            if not semSom then sfx.clique() end
+            fn()
+        end))
+    end
+
+    -- arrastar (mouse e toque); clique curto (sem mover) chama aoClicar
+    local function tornarArrastavel(alvoInput, mover, aoClicar)
+        local arrastando, moveu, dragInput, inicioPos, inicioObj = false, false, nil, nil, nil
+        rastrear(alvoInput.InputBegan:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+                arrastando, moveu = true, false
+                dragInput = input
+                inicioPos = input.Position
+                inicioObj = Vector2.new(mover.Position.X.Offset, mover.Position.Y.Offset)
+                local conn
+                conn = input.Changed:Connect(function()
+                    if input.UserInputState == Enum.UserInputState.End then
+                        conn:Disconnect()
+                        arrastando = false
+                        if not moveu and aoClicar then aoClicar() end
+                    end
+                end)
+            end
+        end))
+        rastrear(UserInputService.InputChanged:Connect(function(input)
+            if not arrastando then return end
+            if input.UserInputType == Enum.UserInputType.MouseMovement or input == dragInput then
+                local d = input.Position - inicioPos
+                if not moveu and d.Magnitude < 6 then return end
+                moveu = true
+                local tam = mover.AbsoluteSize
+                local cx, cy = limitarPos(inicioObj.X + d.X, inicioObj.Y + d.Y, tam.X, tam.Y)
+                mover.Position = UDim2.fromOffset(cx, cy)
+                if mover == MN.root then MN.cx, MN.cy = cx, cy end
+            end
+        end))
+    end
+
+    -- interruptor liga/desliga (trilho + bolinha)
+    local function criarToggle(pai, y, onChange)
+        local trilho = botao({
+            AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, 0, 0, y), Size = UDim2.fromOffset(54, 22),
+            Text = "", ZIndex = ZM + 4,
+        }, pai)
+        local knob = frame({
+            Position = UDim2.fromOffset(2, 2), Size = UDim2.fromOffset(18, 18),
+            BackgroundColor3 = PALETA.Branco, BackgroundTransparency = 0, ZIndex = ZM + 5,
+        }, trilho)
+        local t = {}
+        function t.set(on)
+            tw(knob, 0.15, {
+                Position = on and UDim2.fromOffset(34, 2) or UDim2.fromOffset(2, 2),
+                BackgroundColor3 = on and PALETA.Ciano or Color3.fromRGB(120, 120, 150),
+            })
+            tw(trilho, 0.15, { BackgroundColor3 = on and Color3.fromRGB(0, 70, 90) or Color3.fromRGB(16, 12, 38) })
+        end
+        ligarBotao(trilho, onChange, true)
+        return t
+    end
+
+    local function atualizarFooter()
+        if MN.rodape then
+            MN.rodape.Text = string.format("AUTO-RESPAWN: ON  //  PLAYERS: %d", #Players:GetPlayers())
+        end
+    end
+
+    -- ---- aba CAPRI: controla a aura, as manifestações, as vozes e os taunts do script Capri ----
+    local NIVEIS_CAPRI = {
+        { aura = 0.6, frag = 3, amb = 0.8 },
+        { aura = 1.0, frag = 5, amb = 1.15 },
+        { aura = 1.5, frag = 7, amb = 1.6 },
+    }
+
+    local function nivelAtual()
+        local v = CONFIG.CapriAura.Intensidade
+        if v < 0.8 then return 1 end
+        if v < 1.25 then return 2 end
+        return 3
+    end
+
+    local function atualizarAuraUI()
+        if not MN.toggles.aura then return end
+        MN.toggles.aura.set(CONFIG.CapriAura.Ativo)
+        MN.toggles.amb.set(CONFIG.CapriAmbient.Ativo)
+        MN.toggles.voz.set(CONFIG.Audio.FalasCapri)
+        MN.toggles.taunt.set(CONFIG.Audio.AtivarPorClique)
+        local nv = nivelAtual()
+        for i, b in ipairs(MN.niveis) do
+            local sel = (i == nv)
+            tw(b, 0.12, {
+                BackgroundColor3 = sel and PALETA.Magenta or Color3.fromRGB(16, 12, 38),
+                TextColor3 = sel and PALETA.Branco or PALETA.Ciano,
+            })
+        end
+    end
+
+    local function auraSetAtiva(on)
+        CONFIG.CapriAura.Ativo = on
+        sfx.toggle(on)
+        if on then
+            sfx.auraOn()
+            local ch = player.Character
+            local rp = ch and ch:FindFirstChild("HumanoidRootPart")
+            if rp then
+                voxelBurst(rp.Position, 30, 3, 8)
+                discoChao(Vector3.new(rp.Position.X, alturaChao(rp.Position, ch), rp.Position.Z), PALETA.Magenta, 10, 0.6, 0)
+                luzFlash(rp.Position, PALETA.Magenta, 0.6)
+            end
+            if ch and capriIniciarAura then capriIniciarAura(ch) end
+        else
+            sfx.auraOff()
+            if capriLimparAura then capriLimparAura() end
+        end
+        atualizarAuraUI()
+    end
+
+    local function auraSetNivel(n)
+        local d = NIVEIS_CAPRI[n]
+        if not d then return end
+        CONFIG.CapriAura.Intensidade = d.aura
+        CONFIG.CapriAura.Fragmentos = d.frag
+        CONFIG.CapriAmbient.Intensidade = d.amb
+        if CONFIG.CapriAura.Ativo and capriIniciarAura and player.Character then
+            capriIniciarAura(player.Character)
+        end
+        atualizarAuraUI()
+    end
+
+    -- ---- busca de nick (Original = Name | Visual = DisplayName); AMIGOS sempre primeiro ----
+    local function buscarAlvos(txt)
+        local q = txt:lower()
+        local lista = {}
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p ~= player then
+                local n, d = p.Name, p.DisplayName
+                local nl, dl = n:lower(), d:lower()
+                local melhor = nil
+                if nl:sub(1, #q) == q then
+                    melhor = { player = p, texto = n, campo = "ORIGINAL", prefixo = true }
+                end
+                if dl:sub(1, #q) == q then
+                    if not melhor or #d < #n then
+                        melhor = { player = p, texto = d, campo = "VISUAL", prefixo = true }
+                    end
+                end
+                if not melhor then
+                    local achouN = nl:find(q, 1, true)
+                    local achouD = dl:find(q, 1, true)
+                    if achouN or achouD then
+                        melhor = { player = p, texto = achouN and n or d, campo = achouN and "ORIGINAL" or "VISUAL", prefixo = false }
+                    end
+                end
+                if melhor then
+                    melhor.amigo = LISTA.ehAmigo(p)
+                    melhor.rec = LISTA.posicaoRecente(p.UserId) or 1e9
+                    lista[#lista + 1] = melhor
+                end
+            end
+        end
+        table.sort(lista, function(a, b)
+            if a.prefixo ~= b.prefixo then return a.prefixo end
+            if a.amigo ~= b.amigo then return a.amigo end
+            if a.rec ~= b.rec then return a.rec < b.rec end
+            if #a.texto ~= #b.texto then return #a.texto < #b.texto end
+            return a.texto:lower() < b.texto:lower()
+        end)
+        return lista
+    end
+
+    local function mostrarCartao(p, msg, info)
+        if not MN.cartaoStatus then return end
+        if not p then
+            local semMatch = (msg == "NO MATCH FOUND")
+            MN.cartaoStatus.Text = msg or ""
+            MN.cartaoStatus.TextColor3 = Color3.fromRGB(140, 150, 180)
+            MN.cartaoOriginal.Text, MN.cartaoVisual.Text = "-", "-"
+            MN.cartaoOriginal.TextColor3, MN.cartaoVisual.TextColor3 = PALETA.Branco, PALETA.Branco
+            MN.statusPonto.Text = semMatch and "[ NO MATCH ]" or "[ IDLE ]"
+            MN.statusPonto.TextColor3 = semMatch and PALETA.Vermelho or Color3.fromRGB(140, 150, 180)
+            return
+        end
+        local exato = info and (info.texto:lower() == trim(MN.caixa.Text):lower())
+        local dist = ""
+        local meuChar = player.Character
+        local meuRoot = meuChar and meuChar:FindFirstChild("HumanoidRootPart")
+        local aRoot = p.Character and p.Character:FindFirstChild("HumanoidRootPart")
+        if meuRoot and aRoot then
+            dist = string.format("  //  %d STUDS", math.floor((meuRoot.Position - aRoot.Position).Magnitude))
+        end
+        local tag = LISTA.ehAmigo(p) and "  //  FRIEND" or ""
+        MN.cartaoStatus.Text = (exato and "TARGET LOCKED" or "TARGET FOUND") .. tag .. dist
+        MN.cartaoStatus.TextColor3 = exato and PALETA.Verde or PALETA.Ouro
+        MN.cartaoOriginal.Text = p.Name
+        MN.cartaoVisual.Text = p.DisplayName
+        local campo = info and info.campo
+        MN.cartaoOriginal.TextColor3 = (campo == "ORIGINAL") and PALETA.Ouro or PALETA.Branco
+        MN.cartaoVisual.TextColor3 = (campo == "VISUAL") and PALETA.Ouro or PALETA.Branco
+        MN.statusPonto.Text = exato and "[ LOCKED ]" or "[ MATCH ]"
+        MN.statusPonto.TextColor3 = exato and PALETA.Verde or PALETA.Ouro
+    end
+
+    local function atualizarChips(lista)
+        for i = 1, 3 do
+            local c = MN.chips[i]
+            if c then
+                local item = lista[i]
+                c.item = item
+                if item then
+                    c.btn.Text = (item.amigo and "* " or "") .. item.texto
+                    c.stroke.Color = item.amigo and PALETA.Ouro or PALETA.Magenta
+                    c.btn.Visible = true
+                else
+                    c.btn.Visible = false
+                end
+            end
+        end
+    end
+
+    local function atualizarBusca()
+        if not MN.caixa then return end
+        local bruto = MN.caixa.Text
+        local txt = trim(bruto)
+        local minL = CONFIG.TP.MinLetras
+
+        if #txt < minL then
+            MN.alvo, MN.alvoTexto, MN.ultimoAlvo = nil, "", nil
+            MN.ghost.Text = ""
+            mostrarCartao(nil, (#txt == 0) and "AWAITING INPUT ..." or ("TYPE " .. minL .. "+ CHARS"))
+            atualizarChips({})
+            return
+        end
+
+        local lista = buscarAlvos(txt)
+        local melhor = lista[1]
+        if not melhor then
+            MN.alvo, MN.alvoTexto = nil, ""
+            MN.ghost.Text = ""
+            mostrarCartao(nil, "NO MATCH FOUND")
+            atualizarChips({})
+            MN.ultimoAlvo = nil
+            return
+        end
+
+        MN.alvo, MN.alvoTexto = melhor.player, melhor.texto
+        -- fantasma vermelho: espaços no lugar do que já foi digitado + o resto do nick (fonte monoespaçada)
+        if melhor.prefixo and #melhor.texto > #txt then
+            MN.ghost.Text = string.rep(" ", #bruto) .. melhor.texto:sub(#txt + 1)
+        else
+            MN.ghost.Text = ""
+        end
+        mostrarCartao(melhor.player, nil, melhor)
+        atualizarChips(lista)
+        if MN.ultimoAlvo ~= melhor.player then
+            MN.ultimoAlvo = melhor.player
+            if not MN.autoPreenchendo then sfx.achou() end
+        end
+    end
+
+    -- completa o texto "digitando" o resto do nick (letras vermelhas viram brancas)
+    local function completarTexto(completo, depois)
+        if not MN.caixa then return end
+        MN.autoPreenchendo = true
+        seguro(function()
+            local ok = pcall(function()
+                local atual = trim(MN.caixa.Text)
+                local n = #completo
+                if #atual < n and completo:sub(1, #atual):lower() == atual:lower() then
+                    MN.caixa.Text = completo:sub(1, #atual)
+                    for i = #atual + 1, n do
+                        MN.caixa.Text = completo:sub(1, i)
+                        if i % 2 == 0 then sfx.tick() end
+                        task.wait(0.03)
+                    end
+                else
+                    MN.caixa.Text = completo
+                end
+                pcall(function() MN.caixa.CursorPosition = #completo + 1 end)
+            end)
+            MN.autoPreenchendo = false
+            if ok and depois then depois() end
+        end)
+    end
+
+    local function confirmar()
+        local txt = trim(MN.caixa.Text)
+        if #txt < CONFIG.TP.MinLetras then
+            sfx.erro()
+            toast("TYPE A NICK (" .. CONFIG.TP.MinLetras .. "+ CHARS)", PALETA.Vermelho)
+            return
+        end
+        atualizarBusca()
+        if not MN.alvo then
+            sfx.erro()
+            toast("NO TARGET FOUND", PALETA.Vermelho)
+            return
+        end
+        local alvo, completo = MN.alvo, MN.alvoTexto
+        completarTexto(completo, function()
+            seguro(teleportarAtras, alvo)
+        end)
+    end
+
+    local function selecionarItem(item)
+        if item then completarTexto(item.texto, nil) end
+    end
+
+    -- clicou numa linha da lista: vai para a aba TP com o nick preenchido
+    function selecionarJogador(p)
+        trocarAba("tp", true)
+        completarTexto(p.Name, nil)
+    end
+
+    -- ---- lista rápida: AMIGOS no topo, depois alvos recentes ----
+    local function limparLista()
+        for _, o in ipairs(MN.linhasLista) do pcall(function() o:Destroy() end) end
+        MN.linhasLista = {}
+    end
+
+    local function criarCabecalhoLista(ordem, txt, cor)
+        local l = texto({
+            Size = UDim2.new(1, -6, 0, 14), Font = Enum.Font.Code, TextSize = 11,
+            TextXAlignment = Enum.TextXAlignment.Left, TextColor3 = cor, Text = txt,
+            LayoutOrder = ordem, ZIndex = ZM + 5,
+        }, MN.listaScroll)
+        MN.linhasLista[#MN.linhasLista + 1] = l
+    end
+
+    local function criarLinhaLista(ordem, p, tipo)
+        local cor = (tipo == "amigo") and PALETA.Ouro or PALETA.Magenta
+        local linha = botao({
+            Size = UDim2.new(1, -6, 0, 30), BackgroundColor3 = Color3.fromRGB(10, 8, 26), BackgroundTransparency = 0.2,
+            LayoutOrder = ordem, ZIndex = ZM + 5,
+        }, MN.listaScroll)
+        novo("UIStroke", { Color = cor, Thickness = 1, Transparency = 0.6,
+                           ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, linha)
+        frame({ Size = UDim2.new(0, 3, 1, 0), BackgroundColor3 = cor, BackgroundTransparency = 0, ZIndex = ZM + 6 }, linha)
+        texto({
+            Position = UDim2.new(0, 10, 0, 2), Size = UDim2.new(1, -66, 0, 14), Font = Enum.Font.Code, TextSize = 13,
+            TextXAlignment = Enum.TextXAlignment.Left, TextColor3 = PALETA.Branco,
+            TextTruncate = Enum.TextTruncate.AtEnd, Text = p.DisplayName, ZIndex = ZM + 6,
+        }, linha)
+        texto({
+            Position = UDim2.new(0, 10, 0, 16), Size = UDim2.new(1, -66, 0, 12), Font = Enum.Font.Code, TextSize = 10,
+            TextXAlignment = Enum.TextXAlignment.Left, TextColor3 = Color3.fromRGB(140, 150, 180),
+            TextTruncate = Enum.TextTruncate.AtEnd, Text = "@" .. p.Name, ZIndex = ZM + 6,
+        }, linha)
+        local btn = botao({
+            AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -4, 0.5, 0), Size = UDim2.fromOffset(46, 22),
+            Text = "TP", TextColor3 = PALETA.Ouro, Font = Enum.Font.SciFi, TextSize = 13, ZIndex = ZM + 7,
+        }, linha)
+        ligarBotao(btn, function() seguro(teleportarAtras, p) end)
+        ligarBotao(linha, function() selecionarJogador(p) end)
+        MN.linhasLista[#MN.linhasLista + 1] = linha
+    end
+
+    function atualizarLista()
+        if not MN.listaScroll then return end
+        limparLista()
+        local amigos, recs = LISTA.montar()
+        local max = CONFIG.Lista.Maximo
+        local ordem, usados = 0, 0
+
+        if #amigos > 0 then
+            ordem = ordem + 1
+            criarCabecalhoLista(ordem, "-- FRIENDS (" .. #amigos .. ") --", PALETA.Ouro)
+            for _, e in ipairs(amigos) do
+                if usados >= max then break end
+                ordem = ordem + 1
+                usados = usados + 1
+                criarLinhaLista(ordem, e.player, "amigo")
+            end
+        end
+        if #recs > 0 and usados < max then
+            ordem = ordem + 1
+            criarCabecalhoLista(ordem, "-- RECENT TARGETS --", PALETA.Magenta)
+            for _, e in ipairs(recs) do
+                if usados >= max then break end
+                ordem = ordem + 1
+                usados = usados + 1
+                criarLinhaLista(ordem, e.player, "recente")
+            end
+        end
+        if ordem == 0 then
+            local l = texto({
+                Size = UDim2.new(1, -6, 0, 48), Font = Enum.Font.Code, TextSize = 11, TextWrapped = true,
+                TextColor3 = Color3.fromRGB(140, 150, 180), LayoutOrder = 1, ZIndex = ZM + 5,
+                Text = "NO FRIENDS OR RECENT TARGETS IN THIS SERVER YET.\nTELEPORT TO SOMEONE AND THEY SHOW UP HERE.",
+            }, MN.listaScroll)
+            MN.linhasLista[#MN.linhasLista + 1] = l
+        end
+    end
+
+    local function estilizarAbas()
+        for k, b in pairs(MN.abas) do
+            local sel = (k == MN.aba)
+            tw(b, 0.12, {
+                BackgroundColor3 = sel and PALETA.Magenta or Color3.fromRGB(16, 12, 38),
+                TextColor3 = sel and PALETA.Branco or PALETA.Ciano,
+            })
+        end
+    end
+
+    function trocarAba(nome, semSom)
+        if not MN.pags[nome] then return end
+        if not semSom and MN.aba ~= nome then sfx.tick() end
+        MN.aba = nome
+        for k, pg in pairs(MN.pags) do pg.Visible = (k == nome) end
+        if nome ~= "tp" then pcall(function() MN.caixa:ReleaseFocus() end) end
+        estilizarAbas()
+        if nome == "lista" then atualizarLista() end
+        if nome == "tp" then atualizarBusca() end
+    end
+
+    -- ---- loop visual do menu (nick com efeitos, varredura, borda) ----
+    local function menuLoopIniciar()
+        if MN.loopConn then return end
+        local ini = os.clock()
+        local ult = 0
+        local proxScramble = ini + rf(3, 6)
+        local nomeV = player.DisplayName
+        local ascii = ehAscii(nomeV)
+        MN.loopConn = RunService.RenderStepped:Connect(function()
+            if encerrado or not MN.aberto then
+                if MN.loopConn then MN.loopConn:Disconnect(); MN.loopConn = nil end
+                return
+            end
+            local t = os.clock()
+            MN.barraScan.Position = UDim2.new(0, 0, 0, ((t - ini) * 150) % (BH + 90) - 60)
+            if t - ult < 0.05 then return end
+            ult = t
+
+            local k = (math.sin(t * 2.2) + 1) / 2
+            MN.nickStroke.Color = PALETA.Ciano:Lerp(PALETA.Magenta, k)
+
+            if math.random() < 0.08 then
+                local d = math.random(2, 8)
+                MN.nickR.Position = UDim2.new(0, 14 - d, 0, 60 + math.random(-2, 2))
+                MN.nickC.Position = UDim2.new(0, 14 + d, 0, 60 + math.random(-2, 2))
+                if ascii and math.random() < 0.5 then
+                    local emb = embaralhar(nomeV, 0.35)
+                    MN.nick.Text, MN.nickR.Text, MN.nickC.Text = emb, emb, emb
+                    task.delay(0.07, function()
+                        if MN.nick.Parent then MN.nick.Text, MN.nickR.Text, MN.nickC.Text = nomeV, nomeV, nomeV end
+                    end)
+                end
+            else
+                MN.nickR.Position = UDim2.new(0, 12, 0, 60)
+                MN.nickC.Position = UDim2.new(0, 16, 0, 60)
+            end
+
+            if t > proxScramble then
+                proxScramble = t + rf(4, 8)
+                if ascii then revelar({ MN.nick, MN.nickR, MN.nickC }, nomeV, 0.45) end
+            end
+
+            if math.random() < 0.05 then
+                MN.rootStroke.Color = pick({ PALETA.Magenta, PALETA.Ouro, PALETA.Ciano })
+            else
+                MN.rootStroke.Color = PALETA.Ciano
+            end
+        end)
+    end
+
+    -- ---- construção da interface ----
+    local function linhaEm(pai, x, y, rotulo, wRot)
+        texto({
+            Position = UDim2.new(0, x, 0, y), Size = UDim2.fromOffset(wRot, 14), Font = Enum.Font.Code, TextSize = 12,
+            TextXAlignment = Enum.TextXAlignment.Left, TextColor3 = PALETA.Magenta, TextTransparency = 0.15,
+            Text = rotulo, ZIndex = ZM + 4,
+        }, pai)
+        return texto({
+            Position = UDim2.new(0, x + wRot + 4, 0, y), Size = UDim2.new(1, -(x + wRot + 4) - 10, 0, 14),
+            Font = Enum.Font.Code, TextSize = 12, TextXAlignment = Enum.TextXAlignment.Left, TextColor3 = PALETA.Branco,
+            TextTruncate = Enum.TextTruncate.AtEnd, ZIndex = ZM + 4,
+        }, pai)
+    end
+
+    local function criarMenu()
+        local s, vw, vh = calcEscala()
+        MN.escala = s
+        local W, H = tamanhoMenu()
+        if vw >= 900 then MN.cx, MN.cy = vw - W / 2 - 24, vh / 2 else MN.cx, MN.cy = vw / 2, vh / 2 end
+        MN.cx, MN.cy = limitarPos(MN.cx, MN.cy, W, H)
+
+        MN.root = frame({
+            AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromOffset(MN.cx, MN.cy),
+            Size = UDim2.fromOffset(W, H), ZIndex = ZM, ClipsDescendants = true, Visible = false,
+        }, gui)
+        MN.rootStroke = novo("UIStroke", { Color = PALETA.Ciano, Thickness = 2, Transparency = 0.15 }, MN.root)
+
+        MN.corpo = frame({
+            AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
+            Size = UDim2.fromOffset(BW, BH), BackgroundTransparency = 0.12, ZIndex = ZM + 1,
+        }, MN.root)
+        MN.uiscale = novo("UIScale", { Scale = s }, MN.corpo)
+        novo("UIGradient", {
+            Rotation = 90,
+            Color = ColorSequence.new({
+                ColorSequenceKeypoint.new(0, Color3.fromRGB(22, 12, 48)),
+                ColorSequenceKeypoint.new(1, Color3.fromRGB(8, 14, 32)),
+            }),
+        }, MN.corpo)
+
+        -- scanlines decorativas + barra de varredura
+        for i = 1, 37 do
+            frame({ Position = UDim2.new(0, 0, 0, i * 10), Size = UDim2.new(1, 0, 0, 1),
+                    BackgroundColor3 = Color3.new(0, 0, 0), BackgroundTransparency = 0.88, ZIndex = ZM + 2 }, MN.corpo)
+        end
+        MN.barraScan = frame({
+            Size = UDim2.new(1, 0, 0, 46), Position = UDim2.new(0, 0, 0, -60),
+            BackgroundColor3 = PALETA.Ciano, BackgroundTransparency = 0, ZIndex = ZM + 6,
+        }, MN.corpo)
+        novo("UIGradient", {
+            Rotation = 90,
+            Transparency = NumberSequence.new({
+                NumberSequenceKeypoint.new(0, 1), NumberSequenceKeypoint.new(0.5, 0.9), NumberSequenceKeypoint.new(1, 1),
+            }),
+        }, MN.barraScan)
+
+        -- cantos neon
+        local function canto(ex, ey)
+            frame({ AnchorPoint = Vector2.new(ex, ey), Position = UDim2.fromScale(ex, ey), Size = UDim2.fromOffset(18, 2),
+                    BackgroundColor3 = PALETA.Magenta, BackgroundTransparency = 0, ZIndex = ZM + 9 }, MN.corpo)
+            frame({ AnchorPoint = Vector2.new(ex, ey), Position = UDim2.fromScale(ex, ey), Size = UDim2.fromOffset(2, 18),
+                    BackgroundColor3 = PALETA.Magenta, BackgroundTransparency = 0, ZIndex = ZM + 9 }, MN.corpo)
+        end
+        canto(0, 0); canto(1, 0); canto(0, 1); canto(1, 1)
+
+        -- cabeçalho (arrastar por aqui)
+        MN.header = frame({
+            Size = UDim2.new(1, 0, 0, 38), BackgroundColor3 = Color3.fromRGB(26, 16, 58),
+            BackgroundTransparency = 0.25, ZIndex = ZM + 3,
+        }, MN.corpo)
+        MN.tituloMenu = texto({
+            Position = UDim2.new(0, 14, 0, 0), Size = UDim2.new(1, -60, 1, 0), Font = Enum.Font.SciFi, TextSize = 17,
+            TextXAlignment = Enum.TextXAlignment.Left, TextColor3 = PALETA.Ciano, ZIndex = ZM + 4, Text = "CAPRI // PROTOCOL",
+        }, MN.header)
+        MN.btnFechar = botao({
+            AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -8, 0.5, 0), Size = UDim2.fromOffset(28, 26),
+            Text = "X", TextColor3 = PALETA.Vermelho, ZIndex = ZM + 5,
+        }, MN.header)
+        frame({ Position = UDim2.new(0, 0, 0, 38), Size = UDim2.new(1, 0, 0, 1),
+                BackgroundColor3 = PALETA.Ciano, BackgroundTransparency = 0.2, ZIndex = ZM + 4 }, MN.corpo)
+
+        -- identidade (seu nick com efeitos)
+        texto({
+            Position = UDim2.new(0, 14, 0, 46), Size = UDim2.new(1, -28, 0, 12), Font = Enum.Font.Code, TextSize = 10,
+            TextXAlignment = Enum.TextXAlignment.Left, TextColor3 = PALETA.Magenta, Text = "NETRUNNER // IDENTITY", ZIndex = ZM + 4,
+        }, MN.corpo)
+        local nomeV = player.DisplayName
+        local function camadaNick(cor, dx, transp, z)
+            local l = texto({
+                Position = UDim2.new(0, 14 + dx, 0, 60), Size = UDim2.new(1, -28, 0, 38), Font = Enum.Font.SciFi,
+                TextScaled = true, TextXAlignment = Enum.TextXAlignment.Left, TextColor3 = cor,
+                TextTransparency = transp, ZIndex = z, Text = nomeV,
+            }, MN.corpo)
+            novo("UITextSizeConstraint", { MaxTextSize = 32, MinTextSize = 12 }, l)
+            return l
+        end
+        MN.nickR = camadaNick(PALETA.Vermelho, -2, 0.35, ZM + 4)
+        MN.nickC = camadaNick(PALETA.Ciano, 2, 0.35, ZM + 4)
+        MN.nick  = camadaNick(PALETA.Branco, 0, 0, ZM + 5)
+        MN.nickStroke = novo("UIStroke", { Color = PALETA.Ciano, Thickness = 1.5, Transparency = 0.35 }, MN.nick)
+        MN.valOriginal = linhaEm(MN.corpo, 14, 102, "ORIGINAL", 70)
+        MN.valVisual   = linhaEm(MN.corpo, 14, 118, "VISUAL", 70)
+        MN.valOriginal.Text, MN.valVisual.Text = player.Name, nomeV
+        frame({ Position = UDim2.new(0, 14, 0, 138), Size = UDim2.new(1, -28, 0, 1),
+                BackgroundColor3 = PALETA.Magenta, BackgroundTransparency = 0.5, ZIndex = ZM + 4 }, MN.corpo)
+
+        -- abas: TP | LIST | AURA
+        local defAbas = { { "tp", "TP" }, { "lista", "LIST" }, { "aura", "CAPRI" } }
+        for i, a in ipairs(defAbas) do
+            local b = botao({
+                Position = UDim2.new(0, 14 + (i - 1) * 106, 0, 146), Size = UDim2.fromOffset(100, 24),
+                Text = a[2], Font = Enum.Font.SciFi, TextSize = 14, ZIndex = ZM + 4,
+            }, MN.corpo)
+            MN.abas[a[1]] = b
+            ligarBotao(b, function() trocarAba(a[1]) end, true)
+        end
+
+        -- ===== página TP: busca de nick =====
+        local pagTP = frame({
+            Position = UDim2.new(0, 14, 0, 178), Size = UDim2.new(1, -28, 0, 160), ZIndex = ZM + 3,
+        }, MN.corpo)
+        MN.pags.tp = pagTP
+        texto({
+            Position = UDim2.new(0, 0, 0, 0), Size = UDim2.fromOffset(200, 12), Font = Enum.Font.Code, TextSize = 10,
+            TextXAlignment = Enum.TextXAlignment.Left, TextColor3 = PALETA.Ciano, Text = "TELEPORT // TARGET LOCK", ZIndex = ZM + 4,
+        }, pagTP)
+        MN.statusPonto = texto({
+            AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, 0, 0, 0), Size = UDim2.fromOffset(120, 12),
+            Font = Enum.Font.Code, TextSize = 10, TextXAlignment = Enum.TextXAlignment.Right,
+            TextColor3 = Color3.fromRGB(140, 150, 180), Text = "[ IDLE ]", ZIndex = ZM + 4,
+        }, pagTP)
+
+        MN.entrada = frame({
+            Position = UDim2.new(0, 0, 0, 16), Size = UDim2.new(1, 0, 0, 36),
+            BackgroundColor3 = Color3.fromRGB(6, 6, 18), BackgroundTransparency = 0.1, ZIndex = ZM + 3,
+        }, pagTP)
+        MN.entradaStroke = novo("UIStroke", { Color = PALETA.Ciano, Thickness = 1, Transparency = 0.4 }, MN.entrada)
+        MN.ghost = texto({
+            Position = UDim2.new(0, 10, 0, 0), Size = UDim2.new(1, -92, 1, 0), Font = Enum.Font.Code, TextSize = 16,
+            TextXAlignment = Enum.TextXAlignment.Left, TextColor3 = PALETA.Vermelho, TextTransparency = 0.55,
+            ZIndex = ZM + 4, Text = "",
+        }, MN.entrada)
+        MN.caixa = novo("TextBox", {
+            Position = UDim2.new(0, 10, 0, 0), Size = UDim2.new(1, -92, 1, 0), BackgroundTransparency = 1,
+            BorderSizePixel = 0, Font = Enum.Font.Code, TextSize = 16, TextXAlignment = Enum.TextXAlignment.Left,
+            TextColor3 = PALETA.Branco, PlaceholderText = "digite um nick (2+ letras)",
+            PlaceholderColor3 = Color3.fromRGB(110, 120, 150), ClearTextOnFocus = false, Text = "",
+            ZIndex = ZM + 5, ClipsDescendants = true,
+        }, MN.entrada)
+        MN.btnTP = botao({
+            AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -5, 0.5, 0), Size = UDim2.fromOffset(68, 26),
+            Text = "TP >", TextColor3 = PALETA.Ouro, Font = Enum.Font.SciFi, TextSize = 14, ZIndex = ZM + 5,
+        }, MN.entrada)
+
+        MN.cartao = frame({
+            Position = UDim2.new(0, 0, 0, 58), Size = UDim2.new(1, 0, 0, 52),
+            BackgroundColor3 = Color3.fromRGB(8, 8, 24), BackgroundTransparency = 0.35, ZIndex = ZM + 3,
+        }, pagTP)
+        novo("UIStroke", { Color = PALETA.Magenta, Thickness = 1, Transparency = 0.6 }, MN.cartao)
+        MN.cartaoStatus = texto({
+            Position = UDim2.new(0, 10, 0, 4), Size = UDim2.new(1, -20, 0, 14), Font = Enum.Font.Code, TextSize = 11,
+            TextXAlignment = Enum.TextXAlignment.Left, TextColor3 = Color3.fromRGB(140, 150, 180),
+            Text = "AWAITING INPUT ...", ZIndex = ZM + 4,
+        }, MN.cartao)
+        MN.cartaoOriginal = linhaEm(MN.cartao, 10, 20, "ORIGINAL", 70)
+        MN.cartaoVisual   = linhaEm(MN.cartao, 10, 35, "VISUAL", 70)
+        MN.cartaoOriginal.Text, MN.cartaoVisual.Text = "-", "-"
+
+        for i = 1, 3 do
+            local b = botao({
+                Position = UDim2.new(0, (i - 1) * 106, 0, 116), Size = UDim2.fromOffset(100, 26), TextSize = 12,
+                ZIndex = ZM + 4, Visible = false, TextTruncate = Enum.TextTruncate.AtEnd,
+            }, pagTP)
+            local st = novo("UIStroke", { Color = PALETA.Magenta, Thickness = 1, Transparency = 0.5,
+                                          ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, b)
+            MN.chips[i] = { btn = b, item = nil, stroke = st }
+        end
+
+        -- ===== página LIST: amigos (topo) + recentes =====
+        local pagLista = frame({
+            Position = UDim2.new(0, 14, 0, 178), Size = UDim2.new(1, -28, 0, 160), ZIndex = ZM + 3, Visible = false,
+        }, MN.corpo)
+        MN.pags.lista = pagLista
+        MN.listaScroll = novo("ScrollingFrame", {
+            Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1, BorderSizePixel = 0,
+            ScrollBarThickness = 3, ScrollBarImageColor3 = PALETA.Ciano,
+            CanvasSize = UDim2.new(0, 0, 0, 0), AutomaticCanvasSize = Enum.AutomaticSize.Y,
+            ScrollingDirection = Enum.ScrollingDirection.Y, ZIndex = ZM + 4,
+        }, pagLista)
+        novo("UIListLayout", { Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder }, MN.listaScroll)
+
+        -- ===== página CAPRI: aura, intensidade, manifestações, vozes, taunts =====
+        local pagAura = frame({
+            Position = UDim2.new(0, 14, 0, 178), Size = UDim2.new(1, -28, 0, 160), ZIndex = ZM + 3, Visible = false,
+        }, MN.corpo)
+        MN.pags.aura = pagAura
+        local function rotuloAura(y, txt, fonte, tam, cor)
+            texto({
+                Position = UDim2.new(0, 0, 0, y), Size = UDim2.fromOffset(190, 22), Font = fonte, TextSize = tam,
+                TextXAlignment = Enum.TextXAlignment.Left, TextColor3 = cor, Text = txt, ZIndex = ZM + 4,
+            }, pagAura)
+        end
+        rotuloAura(0, "CAPRI AURA", Enum.Font.SciFi, 15, PALETA.Magenta)
+        MN.toggles.aura = criarToggle(pagAura, 0, function() auraSetAtiva(not CONFIG.CapriAura.Ativo) end)
+        rotuloAura(32, "INTENSITY", Enum.Font.Code, 13, PALETA.Ciano)
+        for i = 1, 3 do
+            MN.niveis[i] = botao({
+                AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -(3 - i) * 32, 0, 32),
+                Size = UDim2.fromOffset(28, 22), Text = tostring(i), TextSize = 13, ZIndex = ZM + 4,
+            }, pagAura)
+            ligarBotao(MN.niveis[i], function() auraSetNivel(i) end)
+        end
+        rotuloAura(64, "AMBIENT FX", Enum.Font.Code, 13, PALETA.Ciano)
+        MN.toggles.amb = criarToggle(pagAura, 64, function()
+            CONFIG.CapriAmbient.Ativo = not CONFIG.CapriAmbient.Ativo
+            sfx.toggle(CONFIG.CapriAmbient.Ativo)
+            atualizarAuraUI()
+        end)
+        rotuloAura(96, "CAPRI VOICES", Enum.Font.Code, 13, PALETA.Ciano)
+        MN.toggles.voz = criarToggle(pagAura, 96, function()
+            CONFIG.Audio.FalasCapri = not CONFIG.Audio.FalasCapri
+            sfx.toggle(CONFIG.Audio.FalasCapri)
+            atualizarAuraUI()
+        end)
+        rotuloAura(128, "CLICK TAUNTS", Enum.Font.Code, 13, PALETA.Ciano)
+        MN.toggles.taunt = criarToggle(pagAura, 128, function()
+            CONFIG.Audio.AtivarPorClique = not CONFIG.Audio.AtivarPorClique
+            sfx.toggle(CONFIG.Audio.AtivarPorClique)
+            atualizarAuraUI()
+        end)
+
+        -- rodapé
+        MN.rodape = texto({
+            Position = UDim2.new(0, 14, 0, 350), Size = UDim2.new(1, -90, 0, 16), Font = Enum.Font.Code, TextSize = 10,
+            TextXAlignment = Enum.TextXAlignment.Left, TextColor3 = Color3.fromRGB(120, 130, 165), ZIndex = ZM + 4, Text = "",
+        }, MN.corpo)
+        texto({
+            AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -14, 0, 350), Size = UDim2.fromOffset(70, 16),
+            Font = Enum.Font.Code, TextSize = 10, TextXAlignment = Enum.TextXAlignment.Right,
+            TextColor3 = PALETA.Magenta, Text = "v9.2", ZIndex = ZM + 4,
+        }, MN.corpo)
+
+        -- botão flutuante (abre/fecha; também arrastável)
+        MN.botao = botao({
+            AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromOffset(vw - 40, vh * 0.3),
+            Size = UDim2.fromOffset(44, 44), Text = "C", Font = Enum.Font.SciFi, TextSize = 22,
+            ZIndex = ZM + 20, Visible = not introPermitida,
+        }, gui)
+        novo("UICorner", { CornerRadius = UDim.new(0, 10) }, MN.botao)
+        MN.botaoStroke = novo("UIStroke", { Color = PALETA.Ciano, Thickness = 2, Transparency = 0.2,
+                                            ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, MN.botao)
+
+        -- ----- eventos -----
+        ligarBotao(MN.btnFechar, function() fecharMenu() end)
+        ligarBotao(MN.btnTP, function() confirmar() end)
+        for i = 1, 3 do
+            local c = MN.chips[i]
+            ligarBotao(c.btn, function() selecionarItem(c.item) end)
+        end
+
+        tornarArrastavel(MN.header, MN.root, nil)
+        tornarArrastavel(MN.botao, MN.botao, function() sfx.clique(); alternarMenu() end)
+        rastrear(MN.botao.MouseEnter:Connect(function() sfx.hover() end))
+        rastrear(MN.root.InputBegan:Connect(function(input) guiInputs[input] = os.clock() end))
+        rastrear(MN.botao.InputBegan:Connect(function(input) guiInputs[input] = os.clock() end))
+
+        rastrear(MN.caixa:GetPropertyChangedSignal("Text"):Connect(function()
+            if not MN.autoPreenchendo then sfx.tick() end
+            atualizarBusca()
+        end))
+        rastrear(MN.caixa.Focused:Connect(function()
+            MN.entradaStroke.Color = PALETA.Magenta
+            if UserInputService.TouchEnabled then
+                local _, H2 = tamanhoMenu()
+                if not MN.cyAntesTeclado then MN.cyAntesTeclado = MN.cy end
+                MN.cy = H2 / 2 + 6
+                tw(MN.root, 0.2, { Position = UDim2.fromOffset(MN.cx, MN.cy) }, Enum.EasingStyle.Quart)
+            end
+        end))
+        rastrear(MN.caixa.FocusLost:Connect(function(enter)
+            MN.entradaStroke.Color = PALETA.Ciano
+            if MN.cyAntesTeclado then
+                MN.cy = MN.cyAntesTeclado
+                MN.cyAntesTeclado = nil
+                tw(MN.root, 0.2, { Position = UDim2.fromOffset(MN.cx, MN.cy) }, Enum.EasingStyle.Quart)
+            end
+            if enter then confirmar() end
+        end))
+
+        -- Tab completa o nick (PC); tecla configurada abre/fecha o menu
+        rastrear(UserInputService.InputBegan:Connect(function(input, gp)
+            if encerrado then return end
+            if input.KeyCode == Enum.KeyCode.Tab and MN.caixa:IsFocused() and MN.alvoTexto ~= "" then
+                completarTexto(MN.alvoTexto, nil)
+                return
+            end
+            if gp then return end
+            if CONFIG.Menu.Tecla and input.KeyCode == CONFIG.Menu.Tecla then alternarMenu() end
+        end))
+
+        -- lista de jogadores mudou
+        rastrear(Players.PlayerAdded:Connect(function()
+            if MN.aberto then
+                atualizarFooter()
+                if MN.aba == "tp" then atualizarBusca() elseif MN.aba == "lista" then atualizarLista() end
+            end
+        end))
+        rastrear(Players.PlayerRemoving:Connect(function()
+            task.delay(0.15, function()
+                if MN.aberto and not encerrado then
+                    atualizarFooter()
+                    if MN.aba == "tp" then atualizarBusca() elseif MN.aba == "lista" then atualizarLista() end
+                end
+            end)
+        end))
+
+        -- tela mudou de tamanho (girar o celular, redimensionar janela)
+        local cam = workspace.CurrentCamera
+        if cam then
+            rastrear(cam:GetPropertyChangedSignal("ViewportSize"):Connect(function()
+                local s2 = calcEscala()
+                MN.escala = s2
+                MN.uiscale.Scale = s2
+                local W2, H2 = tamanhoMenu()
+                if MN.aberto then MN.root.Size = UDim2.fromOffset(W2, H2) end
+                MN.cx, MN.cy = limitarPos(MN.cx, MN.cy, W2, H2)
+                MN.root.Position = UDim2.fromOffset(MN.cx, MN.cy)
+                local vw2, vh2 = viewport()
+                MN.botao.Position = UDim2.fromOffset(
+                    math.clamp(MN.botao.Position.X.Offset, 24, math.max(24, vw2 - 24)),
+                    math.clamp(MN.botao.Position.Y.Offset, 24, math.max(24, vh2 - 24)))
+            end))
+        end
+
+        -- botão flutuante "respira" com glitch
+        task.spawn(function()
+            local cores = { PALETA.Ciano, PALETA.Magenta, PALETA.Ouro }
+            while not encerrado do
+                task.wait(0.14)
+                if MN.botao and MN.botao.Parent and MN.botao.Visible then
+                    MN.botaoStroke.Color = (math.random() < 0.12) and pick(cores) or PALETA.Ciano
+                    MN.botaoStroke.Transparency = rf(0.05, 0.5)
+                    MN.botao.Rotation = (math.random() < 0.08) and math.random(-4, 4) or 0
+                end
+            end
+        end)
+
+        estilizarAbas()
+        atualizarFooter()
+        atualizarAuraUI()
+        mostrarCartao(nil, "AWAITING INPUT ...")
+    end
+
+    function abrirMenu()
+        if MN.aberto or encerrado or not MN.root then return end
+        MN.aberto = true
+        MN.animToken = MN.animToken + 1
+        local meu = MN.animToken
+        local W, H = tamanhoMenu()
+        MN.cx, MN.cy = limitarPos(MN.cx, MN.cy, W, H)
+        MN.root.Position = UDim2.fromOffset(MN.cx, MN.cy)
+        MN.root.Size = UDim2.fromOffset(W, 2)
+        MN.corpo.BackgroundTransparency = 0.6
+        MN.root.Visible = true
+        if CONFIG.Menu.Som then sfx.abrir() end
+        aberracao(0.5, 10, 0.5)
+        glitchBlocos(0.25, 8)
+        seguro(function()
+            for _ = 1, 3 do
+                if MN.animToken ~= meu then return end
+                MN.root.Visible = false; task.wait(0.025)
+                MN.root.Visible = true;  task.wait(0.03)
+            end
+            if MN.animToken ~= meu then return end
+            tw(MN.root, 0.3, { Size = UDim2.fromOffset(W, H) }, Enum.EasingStyle.Quart)
+            tw(MN.corpo, 0.3, { BackgroundTransparency = 0.12 })
+            task.wait(0.12)
+            if MN.animToken ~= meu then return end
+            local nomeV = player.DisplayName
+            revelar({ MN.tituloMenu }, "CAPRI // PROTOCOL", 0.4)
+            if ehAscii(nomeV) then
+                revelar({ MN.nick, MN.nickR, MN.nickC }, nomeV, 0.55)
+                revelar({ MN.valVisual }, nomeV, 0.45)
+            end
+            if ehAscii(player.Name) then revelar({ MN.valOriginal }, player.Name, 0.45) end
+        end)
+        menuLoopIniciar()
+        atualizarFooter()
+        atualizarAuraUI()
+        if MN.aba == "lista" then atualizarLista() elseif MN.aba == "tp" then atualizarBusca() end
+    end
+
+    function fecharMenu()
+        if not MN.aberto then return end
+        MN.aberto = false
+        MN.animToken = MN.animToken + 1
+        local meu = MN.animToken
+        if CONFIG.Menu.Som then sfx.fechar() end
+        pcall(function() MN.caixa:ReleaseFocus() end)
+        local W = tamanhoMenu()
+        seguro(function()
+            for _ = 1, 2 do
+                if MN.animToken ~= meu then return end
+                MN.root.Visible = false; task.wait(0.02)
+                MN.root.Visible = true;  task.wait(0.025)
+            end
+            if MN.animToken ~= meu then return end
+            tw(MN.root, 0.2, { Size = UDim2.fromOffset(W, 2) }, Enum.EasingStyle.Quart, Enum.EasingDirection.In)
+            task.wait(0.2)
+            if MN.animToken ~= meu then return end
+            tw(MN.root, 0.12, { Size = UDim2.fromOffset(0, 2) })
+            task.wait(0.12)
+            if MN.animToken == meu then MN.root.Visible = false end
+        end)
+    end
+
+    function alternarMenu()
+        if MN.aberto then fecharMenu() else abrirMenu() end
+    end
+
+    -- a lista mudou (amigo detectado, novo recente, alguém entrou/saiu): atualiza com debounce
+    LISTA.aoMudar = function()
+        if MN.listaSujo then return end
+        MN.listaSujo = true
+        task.delay(0.2, function()
+            MN.listaSujo = false
+            if encerrado or not MN.aberto then return end
+            if MN.aba == "lista" then atualizarLista() elseif MN.aba == "tp" then atualizarBusca() end
+        end)
+    end
+
+    if CONFIG.Menu.Ativo then
+        local okM, errM = pcall(criarMenu)
+        if not okM then
+            warn("[Capri] o menu falhou ao montar (o resto continua funcionando):", errM)
+            pcall(function() if MN.botao then MN.botao:Destroy() end end)
+            pcall(function() if MN.root then MN.root:Destroy() end end)
+            MN.botao, MN.root = nil, nil
+        end
+    end
+end
+
+--=============================================================
+-- INTRO DE SPAWN (roda UMA vez: boot -> breach -> materializa -> menu)
+--=============================================================
+local function criarCamIntro(character, dur)
+    local camera = workspace.CurrentCamera
+    local head = character:FindFirstChild("Head") or character:FindFirstChild("HumanoidRootPart")
+    local root = character:FindFirstChild("HumanoidRootPart")
+    if not (camera and head and root) then return nil end
+
+    local foco0 = head.Position
+    local offFim = camera.CFrame.Position - foco0
+    local distFim = offFim.Magnitude
+    if distFim < 3 then return nil end            -- 1ª pessoa: sem cinemática
+
+    local lookFim = camera.CFrame.LookVector
+    local fovFim = camera.FieldOfView
+    local yawFim = math.atan2(offFim.X, offFim.Z)
+    local pitchFim = math.asin(math.clamp(offFim.Y / distFim, -0.99, 0.99))
+    local look = root.CFrame.LookVector
+    local yawIni = math.atan2(look.X, look.Z)    -- começa NA FRENTE do personagem
+    local delta = ((yawFim - yawIni + math.pi) % (2 * math.pi)) - math.pi
+    local ini = os.clock()
+
+    return function(c)
+        local p = (os.clock() - ini) / dur
+        local a = math.min(1, math.max(0, p))
+        local e = TweenService:GetValue(a, Enum.EasingStyle.Quart, Enum.EasingDirection.InOut)
+        local yaw = yawIni + delta * e
+        local pitch = 0.1 + (pitchFim - 0.1) * e
+        local dist = 6.5 + (distFim - 6.5) * e
+        local foco = head.Position
+        local dirV = Vector3.new(math.sin(yaw) * math.cos(pitch), math.sin(pitch), math.cos(yaw) * math.cos(pitch))
+        local pos = foco + dirV * dist
+        local dir = (foco - pos).Unit:Lerp(lookFim, e * e * e)
+        c.CFrame = CFrame.lookAt(pos, pos + dir)
+        c.Focus = CFrame.new(foco)
+        c.FieldOfView = 46 + (fovFim - 46) * e
+        if p >= 1 then CamFX.custom = nil end
+    end
+end
+
+local function rodarIntro(character)
+    introEstado = "rodando"
+    genv.__CapriIntroServidor = chaveServidor()
+    local I = CONFIG.Intro
+
+    local hum = character:WaitForChild("Humanoid", 10)
+    local rp = character:WaitForChild("HumanoidRootPart", 10)
+    if not (hum and rp) then introEstado = "feita"; return end
+
+    local nome = nomeLimpo()
+    local camI = workspace.CurrentCamera
+    local vh = camI and camI.ViewportSize.Y or 720
+    local ui = {}
+    local corpo = nil
+    local ocultar = false
+
+    local function mk(obj) ui[#ui + 1] = obj; return obj end
+    local function fase(dur, fn)
+        local ini = os.clock()
+        while not encerrado do
+            local p = (os.clock() - ini) / dur
+            if p >= 1 then fn(1); break end
+            fn(p)
+            task.wait()
+        end
+    end
+
+    local ok, err = pcall(function()
+        iniciarFreeze(character, 8, true)
+
+        local tsz = math.floor(14 * math.clamp(vh / 720, 0.85, 1.6))
+        local cobertura = mk(frame({ Size = TELA, BackgroundColor3 = Color3.new(0, 0, 0),
+                                     BackgroundTransparency = 0, ZIndex = 1030 }, gui))
+        local term = mk(texto({
+            Position = UDim2.new(0.06, 0, 0.2, 0), Size = UDim2.new(0.62, 0, 0.35, 0), TextSize = tsz,
+            TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top,
+            TextColor3 = PALETA.Ciano, ZIndex = 1031,
+        }, gui))
+        local hex1 = mk(texto({
+            Position = UDim2.new(0.72, 0, 0.12, 0), Size = UDim2.new(0.24, 0, 0.7, 0), TextSize = 11,
+            TextXAlignment = Enum.TextXAlignment.Right, TextYAlignment = Enum.TextYAlignment.Top,
+            TextColor3 = PALETA.Magenta, TextTransparency = 0.5, ZIndex = 1031,
+        }, gui))
+        local barraBg = mk(frame({
+            Position = UDim2.new(0.06, 0, 0.62, 0), Size = UDim2.new(0.5, 0, 0, 8),
+            BackgroundColor3 = Color3.fromRGB(14, 18, 36), BackgroundTransparency = 0, ZIndex = 1031,
+        }, gui))
+        novo("UIStroke", { Color = PALETA.Ciano, Thickness = 1, Transparency = 0.3 }, barraBg)
+        local barraFill = frame({ Size = UDim2.new(0, 0, 1, 0), BackgroundColor3 = PALETA.Ciano,
+                                  BackgroundTransparency = 0, ZIndex = 1032 }, barraBg)
+        local pct = mk(texto({
+            Position = UDim2.new(0.56, 8, 0.62, -4), Size = UDim2.fromOffset(60, 16),
+            TextXAlignment = Enum.TextXAlignment.Left, TextSize = 13, TextColor3 = PALETA.Ciano, ZIndex = 1031,
+        }, gui))
+
+        local function tituloI(cor, dx, transp, z)
+            return mk(texto({
+                Size = UDim2.new(0.8, 0, 0.14, 0), AnchorPoint = Vector2.new(0.5, 0.5),
+                Position = UDim2.new(0.5, dx, 0.42, 0), Font = Enum.Font.SciFi, TextScaled = true,
+                TextColor3 = cor, TextTransparency = transp, ZIndex = z,
+            }, gui))
+        end
+        local tR = tituloI(PALETA.Vermelho, -5, 0.35, 1032)
+        local tC = tituloI(PALETA.Ciano, 5, 0.35, 1032)
+        local tM = tituloI(PALETA.Branco, 0, 0, 1033)
+        novo("UIStroke", { Color = PALETA.Magenta, Thickness = 2, Transparency = 0.4 }, tM)
+        local subI = mk(texto({
+            Size = UDim2.new(0.8, 0, 0.035, 0), AnchorPoint = Vector2.new(0.5, 0.5),
+            Position = UDim2.new(0.5, 0, 0.53, 0), TextScaled = true, TextColor3 = PALETA.Ciano, ZIndex = 1033,
+        }, gui))
+
+        -- FASE A · BOOT (tela preta, terminal, barra)
+        G.scan.Visible = true
+        sfx.introBoot()
+        local morphPronto = false
+        task.spawn(function() pcall(aplicarMorph); morphPronto = true end)
+
+        local linhas = {
+            "CAPRI.EXE // SOULKILLER LINK ........ ESTABLISHED",
+            "NEURAL SLOT ......................... BOUND",
+            string.format("CONSTRUCT 0x%06X ................. SYNCING", math.random(0, 16777215)),
+            "USER: " .. nome,
+            "DECRYPTING SHARD ....................",
+        }
+        local completo = table.concat(linhas, "\n")
+        local ultHex, tituloOk = 0, false
+        fase(1.7, function(p)
+            local k = math.floor(#completo * math.min(1, p * 1.25))
+            term.Text = completo:sub(1, k) .. ((math.floor(os.clock() * 8) % 2 == 0) and "_" or " ")
+            barraFill.Size = UDim2.new(p, 0, 1, 0)
+            pct.Text = string.format("%d%%", math.floor(p * 100))
+            if os.clock() - ultHex > 0.08 then
+                ultHex = os.clock()
+                hex1.Text = hexLinha(18)
+            end
+            if p > 0.5 and not tituloOk then
+                tituloOk = true
+                revelar({ tM, tR, tC }, "CAPRI PROTOCOL", 0.55)
+                revelar({ subI }, "WELCOME, " .. nome, 0.6)
+            end
+            if math.random() < 0.1 then
+                local b = frame({
+                    Size = UDim2.new(math.random(10, 50) / 100, 0, 0, math.random(2, 10)),
+                    Position = UDim2.new(math.random() * 0.5, 0, math.random(), 0),
+                    BackgroundColor3 = pick(NEONS), BackgroundTransparency = rf(0.2, 0.6), ZIndex = 1034,
+                }, gui)
+                task.delay(rf(0.03, 0.1), function() b:Destroy() end)
+            end
+        end)
+
+        -- espera o morph terminar (a tela ainda está preta) e esconde o corpo
+        local t0 = os.clock()
+        while not morphPronto and os.clock() - t0 < 3 and not encerrado do task.wait() end
+        corpo = capturarCorpo(character)
+        ocultar = true
+        task.spawn(function()
+            while ocultar and not encerrado do corpo.aplicar(1); task.wait() end
+        end)
+
+        -- FASE B · BREACH (corta a tela preta, decrypt, câmera começa)
+        local camFn = I.Camera and criarCamIntro(character, 2.8) or nil
+        if camFn then camCustom(camFn) end
+        letterbox(true, 0.6)
+        sfx.introBreach()
+        cobertura:Destroy(); term:Destroy(); barraBg:Destroy(); pct:Destroy(); hex1:Destroy()
+        flashTela(PALETA.Branco, 0.4, 0)
+        gradeDecrypt()
+        aberracao(0.9, 20, 0.55)
+        camShake(3.0, 0.6, true)
+        glitchBlocos(0.7, 20)
+        pulso(efl.bloom, "Intensity", 3, 1.0)
+        task.wait(0.4)
+
+        -- FASE C · MATERIALIZA (feixe do satélite, voxels, estrela, ondas)
+        local pos = rp.Position
+        local chao = Vector3.new(pos.X, alturaChao(pos, character), pos.Z)
+        sfx.introMaterializa()
+        tocarVoz("intro", 1.0, 1.0)
+        feixeSatelite(chao, 500)
+        discoChao(chao, PALETA.Ciano, 18, 0.9, 0.05)
+        discoChao(chao, PALETA.Magenta, 28, 1.0, 0.18)
+        discoChao(chao, PALETA.Branco, 12, 0.6, 0.32)
+        luzFlash(pos, PALETA.Ciano, 1.0)
+        voxelMaterializar(rp, 130)
+        estrelaFlare(PALETA.Ciano, 1.1)
+        ondaDiamante(PALETA.Ciano, 0.8, 0)
+        ondaDiamante(PALETA.Magenta, 0.8, 0.1)
+        ondaDiamante(PALETA.Amarelo, 0.8, 0.2)
+        particulas3D(rp, 100, { PALETA.Ciano, PALETA.Magenta, PALETA.Amarelo })
+        particulas2D(90, NEONS)
+        gradeRespawn()
+        pulso(efl.blur, "Size", 14, 0.6)
+        camShake(2.0, 0.5, false)
+        seguro(highlightGlitch, character, 1.4)
+
+        task.wait(0.45)
+        ocultar = false
+        local ini = os.clock()
+        while os.clock() - ini < 0.9 and character.Parent and not encerrado do
+            local p = (os.clock() - ini) / 0.9
+            corpo.aplicar((math.random() < (1 - p) * 0.85) and rf(0.3, 1) or 0)
+            task.wait(0.04)
+        end
+        corpo.restaurar()
+
+        -- FASE D · ONLINE (título final, corte glitch, barras saem)
+        task.wait(0.3)
+        revelar({ tM, tR, tC }, "CONSTRUCT ONLINE", 0.4)
+        revelar({ subI }, "LINK STABLE // AURA READY", 0.4)
+        task.wait(1.0)
+        for _ = 1, 3 do
+            for _, o in ipairs({ tM, tR, tC, subI }) do o.Visible = false end
+            task.wait(0.04)
+            for _, o in ipairs({ tM, tR, tC, subI }) do o.Visible = true end
+            task.wait(0.04)
+        end
+    end)
+
+    -- limpeza garantida (mesmo se algo falhar no meio)
+    ocultar = false
+    if corpo then corpo.restaurar() end
+    for _, o in ipairs(ui) do pcall(function() o:Destroy() end) end
+    CamFX.custom = nil
+    terminarFreeze()
+    letterbox(false, 0.5)
+    if not emMorte then G.scan.Visible = false end
+    introEstado = "feita"
+    if not ok then warn("[Capri intro] erro:", err) end
+
+    if MN.botao then MN.botao.Visible = true end
+    if CONFIG.Menu.Ativo and CONFIG.Menu.AbrirAposIntro then abrirMenu() end
+    if CONFIG.CapriAura.Ativo and capriIniciarAura then
+        sfx.auraOn()
+        capriIniciarAura(player.Character)
+    end
+end
+
+local function iniciarIntroSegura(character)
+    local ok, err = pcall(rodarIntro, character)
+    if not ok then
+        warn("[Capri] a intro falhou (seguindo sem ela):", err)
+        introEstado = "feita"
+        if MN.botao then MN.botao.Visible = true end
+        if CONFIG.Menu.Ativo and CONFIG.Menu.AbrirAposIntro then abrirMenu() end
+        if CONFIG.CapriAura.Ativo and capriIniciarAura then capriIniciarAura(player.Character) end
+    end
+end
+
+--=============================================================
+-- SALVAMENTO DE POSIÇÃO + ROTAÇÃO
+--=============================================================
+local function alturaVoid() return workspace.FallenPartsDestroyHeight + 60 end
+
+local function atualizarMarcador(cf)
+    if not marcador or not marcador.Parent then
+        marcador = Instance.new("Part")
+        marcador.Name = "LocalInvisivel_Respawn"
+        marcador.Size = Vector3.new(1, 1, 1)
+        marcador.Anchored = true
+        marcador.CanCollide, marcador.CanTouch, marcador.CanQuery = false, false, false
+        marcador.Transparency = 1
+        marcador.Massless = true
+        marcador.Parent = workspace
+    end
+    marcador.CFrame = cf
+end
+
+local function endireitar(cf, reserva)
+    local pos = cf.Position
+    local look = cf.LookVector
+    local plano = Vector3.new(look.X, 0, look.Z)
+    if plano.Magnitude < 0.05 and reserva then
+        local l2 = reserva.LookVector
+        plano = Vector3.new(l2.X, 0, l2.Z)
+    end
+    if plano.Magnitude < 0.05 then return CFrame.new(pos) end
+    return CFrame.lookAt(pos, pos + plano.Unit)
+end
+
+rastrear(RunService.Heartbeat:Connect(function()
+    if not salvandoAtivo then return end
+    local c = player.Character; if not c then return end
+    local h = c:FindFirstChildOfClass("Humanoid")
+    local rp = c:FindFirstChild("HumanoidRootPart")
+    if not (h and rp) or h.Health <= 0 then return end
+
+    local cf = rp.CFrame
+    if cf.Position.Y < alturaVoid() then return end
+
+    if h.FloorMaterial ~= Enum.Material.Air then cframeSeguro = cf end
+
+    local t = os.clock()
+    if t - tempoUltimoSalvamento < 1 and ultimoCFrameSalvo
+    and (cf.Position - ultimoCFrameSalvo.Position).Magnitude <= 5 then return end
+
+    cframeSalvo = cf
+    atualizarMarcador(cf)
+    ultimoCFrameSalvo = cf
+    tempoUltimoSalvamento = t
+end))
+
+--=============================================================
+-- CONFIGURAR CHARACTER
+--=============================================================
+local function limparConexoes()
+    for _, c in ipairs(conexoesCharacter) do pcall(function() c:Disconnect() end) end
+    conexoesCharacter = {}
+end
+
+local function configurarCharacter(character)
+    limparConexoes()
+    local h = character:WaitForChild("Humanoid", 10)
+    if not h then return end
+
+    local healthAnterior = h.Health
+    conexoesCharacter[#conexoesCharacter + 1] = h.HealthChanged:Connect(function(saudeAtual)
+        if saudeAtual < healthAnterior and saudeAtual > 0 and CONFIG.Audio.ReacaoImpacto and capriOnImpact then
+            capriOnImpact(character)
+        end
+        healthAnterior = saudeAtual
+    end)
+
+    conexoesCharacter[#conexoesCharacter + 1] = h.StateChanged:Connect(function(_, novoEstado)
+        if novoEstado == Enum.HumanoidStateType.Jumping and CONFIG.Audio.ReacaoImpacto and capriOnDodge then
+            capriOnDodge(character)
+        end
+    end)
+
+    conexoesCharacter[#conexoesCharacter + 1] = h.Died:Connect(function()
+        local rp = character:FindFirstChild("HumanoidRootPart")
+        if rp and rp.Position.Y > alturaVoid() then
+            cframeSalvo = endireitar(rp.CFrame, ultimoCFrameSalvo)
+            atualizarMarcador(cframeSalvo)
+        elseif cframeSeguro then
+            cframeSalvo = cframeSeguro
+        end
+        salvandoAtivo = false
+        seguro(sequenciaMorte, character, cicloAtual)
+    end)
+end
+
+--=============================================================
+-- RESPAWN (teleporte repetido para o lugar salvo + reforço)
+--=============================================================
+local function levarPara(character, rp, cf)
+    local ok = pcall(function() character:PivotTo(cf) end)
+    if not ok then pcall(function() rp.CFrame = cf end) end
+    pcall(function()
+        rp.AssemblyLinearVelocity = Vector3.zero
+        rp.AssemblyAngularVelocity = Vector3.zero
+    end)
+end
+
+-- true se o jogo te colocou longe do lugar escolhido (ignora só a queda vertical normal)
+local function foraDoLugar(rp, alvoCF)
+    local d = rp.Position - alvoCF.Position
+    return Vector3.new(d.X, 0, d.Z).Magnitude > 6 or math.abs(d.Y) > 50
+end
+
+-- por ~0.5s confere se o jogo te moveu (spawn dele) e leva de volta
+local function reforcarPosicao(character, hum, rp, alvoCF, ciclo)
+    local fim = os.clock() + 0.5
+    while os.clock() < fim and not encerrado and cicloAtual == ciclo and character.Parent and hum.Health > 0 do
+        task.wait(0.05)
+        if rp.Parent and foraDoLugar(rp, alvoCF) then levarPara(character, rp, alvoCF) end
+    end
+end
+
+rastrear(player.CharacterAdded:Connect(function(character)
+    if encerrado then return end
+    salvandoAtivo = false
+    cicloAtual = cicloAtual + 1
+    local ciclo = cicloAtual
+
+    -- 1º spawn (script executado antes de existir personagem): toca a intro no lugar do respawn
+    if introEstado == "pendente" then
+        seguro(configurarCharacter, character)
+        seguro(iniciarIntroSegura, character)
+        salvandoAtivo = true
+        return
+    end
+
+    -- cobre a tela já (esconde o ponto de spawn padrão)
+    tw(G.escuro, 0.08, { BackgroundTransparency = 0.05 })
+
+    seguro(configurarCharacter, character)
+    seguro(iniciarFreeze, character, CONFIG.Freeze.Duracao)
+
+    local h = character:WaitForChild("Humanoid", 10)
+    local rp = character:WaitForChild("HumanoidRootPart", 10)
+    if not (h and rp) then salvandoAtivo = true; return end
+
+    local t0 = os.clock()
+    while h.Health <= 0 and os.clock() - t0 < 3 do task.wait() end
+
+    -- teleporta para o lugar salvo N vezes (padrão: 2x, a cada 0.04s): vence o spawn que o jogo colocou
+    local R = CONFIG.RespawnTP
+    local alvoCF = nil
+    if cframeSalvo then
+        alvoCF = CFrame.new(cframeSalvo.Position + Vector3.new(0, CONFIG.OffsetY, 0))
+                 * (cframeSalvo - cframeSalvo.Position)
+        for _ = 1, R.Repeticoes do
+            task.wait(R.Intervalo)
+            if not character.Parent then break end
+            levarPara(character, rp, alvoCF)
+        end
+    end
+    local resto = 0.15 - (alvoCF and (R.Repeticoes * R.Intervalo) or 0)
+    if resto > 0 then task.wait(resto) end
+    if alvoCF and rp.Parent and foraDoLugar(rp, alvoCF) then levarPara(character, rp, alvoCF) end
+
+    seguro(sequenciaRespawn, character, ciclo)
+
+    -- 🎭 KinxCaesar: reaplica morph a cada respawn
+    seguro(function() task.wait(0.3); aplicarMorph() end)
+    if alvoCF and R.Reforco then seguro(reforcarPosicao, character, h, rp, alvoCF, ciclo) end
+
+    task.delay(1.15, function()
+        if not encerrado and capriIniciarAura then capriIniciarAura(character) end
+    end)
+
+    task.wait((alvoCF and R.Reforco) and 0.55 or 0.2)   -- espera o reforço terminar antes de religar o salvamento
+    cframeSalvo, ultimoCFrameSalvo = nil, nil
+    tempoUltimoSalvamento = os.clock()
+    if h.Health > 0 then salvandoAtivo = true end
+end))
+
+--=============================================================
+-- ✨ CAPRI AMBIENT FX — MANIFESTAÇÕES ALEATÓRIAS (R6)
+-- Inspirado na direção visual descrita por Kai Igarashi:
+-- silhueta vermelha, fragmentos verdes em movimento e luz como força.
+-- Tudo é criado localmente no cliente e não altera outros jogadores.
+--=============================================================
+local function capriObterPersonagem()
+    if encerrado or emMorte or tpOcupado or introEstado == "rodando" then return nil end
+    local character = player.Character
+    if not character or not character.Parent then return nil end
+
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    local root = character:FindFirstChild("HumanoidRootPart")
+    if not humanoid or humanoid.Health <= 0 or not root then return nil end
+    if humanoid.RigType ~= Enum.HumanoidRigType.R6 then return nil end
+
+    return character, root
+end
+
+-- Aura persistente: contorno vermelho/rosa, partículas e fragmentos verdes orbitais.
+-- A atualização é só visual e acompanha o RootPart local do personagem R6.
+local CAPRI_AURA_STATE = { character = nil, folder = nil, connection = nil, shards = {}, attachments = {}, light = nil, highlight = nil }
+
+capriLimparAura = function()
+    if CAPRI_AURA_STATE.connection then
+        pcall(function() CAPRI_AURA_STATE.connection:Disconnect() end)
+        CAPRI_AURA_STATE.connection = nil
+    end
+    for _, attachment in ipairs(CAPRI_AURA_STATE.attachments) do
+        if attachment and attachment.Parent then pcall(function() attachment:Destroy() end) end
+    end
+    CAPRI_AURA_STATE.attachments = {}
+    if CAPRI_AURA_STATE.folder then
+        pcall(function() CAPRI_AURA_STATE.folder:Destroy() end)
+        CAPRI_AURA_STATE.folder = nil
+    end
+    CAPRI_AURA_STATE.character = nil
+    CAPRI_AURA_STATE.shards = {}
+    CAPRI_AURA_STATE.light = nil
+    CAPRI_AURA_STATE.highlight = nil
+end
+
+local function capriCriarParticulaAura(parent, cores, taxa, tamanho, velocidade)
+    local att = Instance.new("Attachment")
+    att.Name = "Capri_AuraAttachment"
+    att.Parent = parent
+    local emitter = Instance.new("ParticleEmitter")
+    emitter.Name = "Capri_AuraParticles"
+    emitter.Texture = "rbxasset://textures/particles/sparkles_main.dds"
+    emitter.Enabled = true
+    emitter.Rate = taxa
+    emitter.Lifetime = NumberRange.new(0.45, 0.95)
+    emitter.Speed = NumberRange.new(velocidade * 0.35, velocidade)
+    emitter.SpreadAngle = Vector2.new(180, 180)
+    emitter.Drag = 2
+    emitter.LightEmission = 1
+    emitter.Rotation = NumberRange.new(0, 360)
+    emitter.RotSpeed = NumberRange.new(-120, 120)
+    emitter.Size = NumberSequence.new({
+        NumberSequenceKeypoint.new(0, tamanho),
+        NumberSequenceKeypoint.new(0.55, tamanho * 0.55),
+        NumberSequenceKeypoint.new(1, 0),
+    })
+    emitter.Transparency = NumberSequence.new({
+        NumberSequenceKeypoint.new(0, 0.12),
+        NumberSequenceKeypoint.new(0.75, 0.35),
+        NumberSequenceKeypoint.new(1, 1),
+    })
+    emitter.Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, cores[1]),
+        ColorSequenceKeypoint.new(0.55, cores[2]),
+        ColorSequenceKeypoint.new(1, cores[3] or cores[1]),
+    })
+    emitter.Parent = att
+    return att
+end
+
+local function capriCriarFragmentoAura(pai, indice, total)
+    local shard = Instance.new("WedgePart")
+    shard.Name = "Capri_OrbitShard_" .. tostring(indice)
+    shard.Anchored = true
+    shard.CanCollide, shard.CanTouch, shard.CanQuery = false, false, false
+    shard.CastShadow = false
+    shard.Material = Enum.Material.Neon
+    shard.Size = Vector3.new(rf(0.22, 0.42), rf(0.5, 0.95), rf(0.2, 0.38))
+    shard.Color = (indice % 4 == 0) and PALETA.Magenta or PALETA.Verde
+    shard.Transparency = 0.06
+    shard.Parent = pai
+
+    local a0 = Instance.new("Attachment")
+    a0.Position = Vector3.new(0, -shard.Size.Y * 0.45, 0)
+    a0.Parent = shard
+    local a1 = Instance.new("Attachment")
+    a1.Position = Vector3.new(0, shard.Size.Y * 0.45, 0)
+    a1.Parent = shard
+    local trail = Instance.new("Trail")
+    trail.Name = "Capri_FragmentTrail"
+    trail.Attachment0, trail.Attachment1 = a0, a1
+    trail.Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, PALETA.Verde),
+        ColorSequenceKeypoint.new(0.65, PALETA.Magenta),
+        ColorSequenceKeypoint.new(1, PALETA.Vermelho),
+    })
+    trail.Transparency = NumberSequence.new({
+        NumberSequenceKeypoint.new(0, 0.12),
+        NumberSequenceKeypoint.new(1, 1),
+    })
+    trail.WidthScale = NumberSequence.new({
+        NumberSequenceKeypoint.new(0, 0.7),
+        NumberSequenceKeypoint.new(1, 0),
+    })
+    trail.Lifetime = 0.22
+    trail.MinLength = 0.04
+    trail.FaceCamera = true
+    trail.LightEmission = 1
+    trail.Parent = shard
+
+    return {
+        part = shard,
+        phase = ((indice - 1) / math.max(total, 1)) * math.pi * 2,
+        radius = rf(1.05, 1.65),
+        height = rf(0.45, 2.45),
+        speed = rf(0.75, 1.35) * ((indice % 2 == 0) and -1 or 1),
+        spin = rf(-2.8, 2.8),
+    }
+end
+
+capriIniciarAura = function(character)
+    capriLimparAura()
+    if not CONFIG.CapriAura.Ativo or encerrado or not character or not character.Parent then return end
+
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    local root = character:FindFirstChild("HumanoidRootPart")
+    local torso = character:FindFirstChild("Torso")
+    local head = character:FindFirstChild("Head")
+    if not humanoid or humanoid.Health <= 0 or not root or not torso or humanoid.RigType ~= Enum.HumanoidRigType.R6 then return end
+
+    local folder = Instance.new("Folder")
+    folder.Name = "Capri_PersistentAura"
+    folder.Parent = fxFolder
+    CAPRI_AURA_STATE.character = character
+    CAPRI_AURA_STATE.folder = folder
+
+    if CONFIG.CapriAura.Silhueta then
+        CAPRI_AURA_STATE.highlight = novo("Highlight", {
+            Name = "Capri_EntitySilhouette",
+            Adornee = character,
+            FillColor = PALETA.Vermelho,
+            OutlineColor = PALETA.Magenta,
+            FillTransparency = 0.91,
+            OutlineTransparency = 0.12,
+            DepthMode = Enum.HighlightDepthMode.AlwaysOnTop,
+        }, folder)
+    end
+
+    local core = novaParte({
+        Name = "Capri_AuraCore",
+        Size = Vector3.new(0.2, 0.2, 0.2),
+        CFrame = root.CFrame,
+        Transparency = 1,
+        Material = Enum.Material.Plastic,
+    })
+    core.Parent = folder
+    if CONFIG.CapriAura.Brilho then
+        CAPRI_AURA_STATE.light = novo("PointLight", {
+            Name = "Capri_LivingLight",
+            Color = PALETA.Verde,
+            Brightness = 2.8,
+            Range = 15,
+            Shadows = false,
+        }, core)
+    end
+
+    if CONFIG.CapriAura.Particulas then
+        CAPRI_AURA_STATE.attachments[#CAPRI_AURA_STATE.attachments + 1] = capriCriarParticulaAura(
+            torso, { PALETA.Verde, PALETA.Magenta, PALETA.Ciano }, N(13 * CONFIG.CapriAura.Intensidade), 0.22, 1.8
+        )
+        if head then
+            CAPRI_AURA_STATE.attachments[#CAPRI_AURA_STATE.attachments + 1] = capriCriarParticulaAura(
+                head, { PALETA.Ciano, PALETA.Magenta, PALETA.Branco }, N(5 * CONFIG.CapriAura.Intensidade), 0.13, 1.1
+            )
+        end
+    end
+
+    local quantidade = math.clamp(N(CONFIG.CapriAura.Fragmentos), 3, 8)
+    for i = 1, quantidade do
+        CAPRI_AURA_STATE.shards[#CAPRI_AURA_STATE.shards + 1] = capriCriarFragmentoAura(folder, i, quantidade)
+    end
+
+    local iniciou = os.clock()
+    CAPRI_AURA_STATE.connection = RunService.RenderStepped:Connect(function()
+        if encerrado or not character.Parent or player.Character ~= character or humanoid.Health <= 0 or not root.Parent then
+            capriLimparAura()
+            return
+        end
+        local t = os.clock() - iniciou
+        local centro = root.Position + Vector3.new(0, 1.15, 0)
+        for i, item in ipairs(CAPRI_AURA_STATE.shards) do
+            local part = item.part
+            if part and part.Parent then
+                local ang = t * item.speed + item.phase
+                local raio = item.radius + math.sin(t * 1.7 + item.phase) * 0.18
+                local pos = centro + Vector3.new(math.cos(ang) * raio, item.height + math.sin(t * 1.9 + item.phase) * 0.32, math.sin(ang) * raio)
+                local look = CFrame.lookAt(pos, centro)
+                part.CFrame = look * CFrame.Angles(math.sin(t * 2 + i) * 0.5, t * item.spin, math.cos(t * 1.4 + i) * 0.35)
+            end
+        end
+        if CAPRI_AURA_STATE.light and CAPRI_AURA_STATE.light.Parent then
+            CAPRI_AURA_STATE.light.Color = (math.sin(t * 1.3) > 0.15) and PALETA.Verde or PALETA.Magenta
+            CAPRI_AURA_STATE.light.Brightness = 2.4 + (0.8 * (0.5 + 0.5 * math.sin(t * 2.2))) * CONFIG.CapriAura.Intensidade
+            CAPRI_AURA_STATE.light.Range = 13 + 3 * (0.5 + 0.5 * math.sin(t * 1.5))
+        end
+        if CAPRI_AURA_STATE.highlight and CAPRI_AURA_STATE.highlight.Parent then
+            CAPRI_AURA_STATE.highlight.FillTransparency = 0.90 + 0.035 * (0.5 + 0.5 * math.sin(t * 2.1))
+            CAPRI_AURA_STATE.highlight.OutlineTransparency = 0.08 + 0.12 * (0.5 + 0.5 * math.sin(t * 3.1))
+        end
+        if core and core.Parent then core.CFrame = root.CFrame * CFrame.new(0, 1.1, 0) end
+    end)
+end
+
+local function capriTweenDestruir(obj, duracao, propriedades, estilo)
+    if not obj or not obj.Parent then return end
+    tw(obj, duracao, propriedades, estilo or Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+    task.delay(duracao + 0.15, function()
+        if obj and obj.Parent then pcall(function() obj:Destroy() end) end
+    end)
+end
+
+-- 1) Silhueta vermelha com contorno rosa: aparição breve da entidade.
+local function capriSilhueta(character, root)
+    local h = novo("Highlight", {
+        Name = "Capri_RedSilhouette",
+        Adornee = character,
+        FillColor = PALETA.Vermelho,
+        OutlineColor = PALETA.Magenta,
+        FillTransparency = 0.28,
+        OutlineTransparency = 0.08,
+        DepthMode = Enum.HighlightDepthMode.AlwaysOnTop,
+    }, fxFolder)
+
+    local dur = rf(0.28, 0.62)
+    tw(h, dur, {
+        FillTransparency = 1,
+        OutlineTransparency = 1,
+    }, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+    task.delay(dur + 0.12, function()
+        if h and h.Parent then h:Destroy() end
+    end)
+end
+
+-- 2) Fragmentos verdes angulares que se soltam e mudam de posição.
+local function capriFragmentos(character, root)
+    local centro = root.Position + Vector3.new(0, 1.25, 0)
+    local quantidade = N(math.random(4, 8))
+
+    for _ = 1, quantidade do
+        if encerrado then break end
+        local shard = Instance.new("WedgePart")
+        shard.Name = "Capri_GreenFragment"
+        shard.Anchored = true
+        shard.CanCollide, shard.CanTouch, shard.CanQuery = false, false, false
+        shard.CastShadow = false
+        shard.Material = Enum.Material.Neon
+
+        local sx = rf(0.22, 0.62) * CONFIG.CapriAmbient.Intensidade
+        local sy = rf(0.35, 1.15) * CONFIG.CapriAmbient.Intensidade
+        local sz = rf(0.18, 0.55) * CONFIG.CapriAmbient.Intensidade
+        shard.Size = Vector3.new(sx, sy, sz)
+        shard.Color = (math.random() < 0.78) and PALETA.Verde or PALETA.Magenta
+        shard.Transparency = rf(0.04, 0.22)
+
+        local ang = rf(0, math.pi * 2)
+        local raio = rf(0.8, 2.0)
+        local inicio = centro + Vector3.new(math.cos(ang) * raio, rf(-0.7, 1.8), math.sin(ang) * raio)
+        shard.CFrame = CFrame.new(inicio) * CFrame.Angles(rf(0, 6.28), rf(0, 6.28), rf(0, 6.28))
+        shard.Parent = fxFolder
+
+        local destino = centro + Vector3.new(rf(-3.8, 3.8), rf(-1.8, 3.0), rf(-3.8, 3.8))
+        local dur = rf(0.32, 0.82)
+        capriTweenDestruir(shard, dur, {
+            CFrame = CFrame.new(destino) * CFrame.Angles(rf(0, 6.28), rf(0, 6.28), rf(0, 6.28)),
+            Size = Vector3.new(0.035, 0.035, 0.035),
+            Transparency = 1,
+        })
+    end
+end
+
+-- 3) Estilhaços de luz verdes/rosas que atravessam o espaço ao redor do corpo.
+local function capriRaios(character, root)
+    local centro = root.Position + Vector3.new(0, rf(0.8, 2.1), 0)
+    local quantidade = N(math.random(3, 6))
+
+    for _ = 1, quantidade do
+        local ang = rf(0, math.pi * 2)
+        local direcao = Vector3.new(math.cos(ang), rf(-0.35, 0.8), math.sin(ang))
+        if direcao.Magnitude < 0.01 then direcao = Vector3.new(1, 0, 0) end
+        direcao = direcao.Unit
+
+        local comprimento = rf(2.5, 6.5) * CONFIG.CapriAmbient.Intensidade
+        local p0 = centro + direcao * rf(0.35, 1.0)
+        local p1 = p0 + direcao * comprimento
+        local meio = (p0 + p1) * 0.5
+        local dur = rf(0.18, 0.42)
+
+        local raio = novaParte({
+            Name = "Capri_LightShard",
+            Size = Vector3.new(rf(0.035, 0.09), rf(0.035, 0.09), comprimento),
+            CFrame = CFrame.lookAt(meio, p1),
+            Color = (math.random() < 0.72) and PALETA.Verde or PALETA.Magenta,
+            Transparency = 0.08,
+        })
+        capriTweenDestruir(raio, dur, {
+            Size = Vector3.new(0.01, 0.01, comprimento * 1.25),
+            CFrame = raio.CFrame * CFrame.new(0, 0, -comprimento * 0.12),
+            Transparency = 1,
+        })
+    end
+end
+
+-- 4) Anéis luminosos que expandem como uma onda de energia.
+local function capriOnda(character, root)
+    local base = root.Position - Vector3.new(0, 2.55, 0)
+    for i = 1, math.random(1, 2) do
+        local cor = (i == 1) and PALETA.Verde or PALETA.Magenta
+        local disco = novaParte({
+            Name = "Capri_LightRing",
+            Shape = Enum.PartType.Cylinder,
+            Size = Vector3.new(0.18, 1.2, 1.2),
+            CFrame = CFrame.new(base) * CFrame.Angles(0, 0, math.rad(90)),
+            Color = cor,
+            Transparency = 0.2,
+        })
+        local dur = rf(0.42, 0.78)
+        task.delay((i - 1) * rf(0.04, 0.12), function()
+            if not encerrado and disco and disco.Parent then
+                capriTweenDestruir(disco, dur, {
+                    Size = Vector3.new(0.16, rf(7, 12), rf(7, 12)),
+                    Transparency = 1,
+                })
+            end
+        end)
+    end
+end
+
+-- 5) Luz pontual forte, breve e com cor variável — Capri como luz viva.
+local function capriPulsoLuz(character, root)
+    local lamp = novaParte({
+        Name = "Capri_LightCore",
+        Size = Vector3.new(0.25, 0.25, 0.25),
+        CFrame = CFrame.new(root.Position + Vector3.new(0, 1.15, 0)),
+        Transparency = 1,
+        Material = Enum.Material.Plastic,
+    })
+    local cor = pick({ PALETA.Branco, PALETA.Verde, PALETA.Magenta })
+    local light = novo("PointLight", {
+        Color = cor,
+        Brightness = rf(2.5, 5.5) * CONFIG.CapriAmbient.Intensidade,
+        Range = rf(10, 18),
+        Shadows = false,
+    }, lamp)
+    local dur = rf(0.24, 0.55)
+    tw(light, dur, { Brightness = 0, Range = rf(22, 32) }, Enum.EasingStyle.Quint)
+    task.delay(dur + 0.12, function()
+        if lamp and lamp.Parent then lamp:Destroy() end
+    end)
+end
+
+-- 6) Distorção digital discreta: pequenos rasgos e deslocamento cromático.
+local function capriGlitch(character, root)
+    local dur = rf(0.18, 0.38)
+    aberracao(dur, math.random(3, 8), rf(0.12, 0.28))
+    glitchBlocos(dur, math.random(2, 5))
+    pulso(efl.bloom, "Intensity", rf(0.65, 1.45), rf(0.25, 0.48))
+end
+
+local CAPRI_EVENTOS = {
+    capriSilhueta,
+    capriFragmentos,
+    capriRaios,
+    capriOnda,
+    capriPulsoLuz,
+    capriGlitch,
+}
+
+local function capriManifestar()
+    local character, root = capriObterPersonagem()
+    if not character or not root then return end
+
+    -- Escolhe efeitos sem repetição dentro da mesma manifestação.
+    local pool = {}
+    for i, fn in ipairs(CAPRI_EVENTOS) do pool[i] = fn end
+    local total = math.clamp(
+        math.random(CONFIG.CapriAmbient.EfeitosMin, CONFIG.CapriAmbient.EfeitosMax),
+        1,
+        #pool
+    )
+
+    for i = 1, total do
+        local indice = math.random(1, #pool)
+        local efeito = table.remove(pool, indice)
+        task.delay(rf(0, 0.22), function()
+            if encerrado then return end
+            local charAtual, rootAtual = capriObterPersonagem()
+            if charAtual and rootAtual then
+                local ok, err = pcall(efeito, charAtual, rootAtual)
+                if not ok and CONFIG.DEBUG then warn("[Capri FX]", err) end
+            end
+        end)
+    end
+end
+
+task.spawn(function()
+    while not encerrado do
+        task.wait(rf(CONFIG.CapriAmbient.IntervaloMin, CONFIG.CapriAmbient.IntervaloMax))
+        if not encerrado and CONFIG.CapriAmbient.Ativo then capriManifestar() end
+    end
+end)
+
+local ultimoAtaqueVoz = 0
+local ultimoImpactoVoz = 0
+
+local function capriEfeitoAtaque()
+    local character, root = capriObterPersonagem()
+    if not character or not root then return end
+    -- Burst curto para acompanhar a entrada do ataque sem lotar a tela.
+    capriFragmentos(character, root)
+    capriRaios(character, root)
+    capriGlitch(character, root)
+    camShake(0.22, 0.14, false)
+end
+
+capriOnImpact = function(character)
+    local agora = os.clock()
+    if agora - ultimoImpactoVoz < 1.8 or encerrado then return end
+    ultimoImpactoVoz = agora
+    tocarVoz("reaction", 0.9, rf(0.96, 1.04))
+    local atual, root = capriObterPersonagem()
+    if atual and root then
+        capriSilhueta(atual, root)
+        capriFragmentos(atual, root)
+        flashTela(PALETA.Magenta, 0.09, 0.82)
+    end
+end
+
+capriOnDodge = function(character)
+    local agora = os.clock()
+    if agora - ultimoImpactoVoz < 2.25 or encerrado then return end
+    ultimoImpactoVoz = agora
+    tocarVoz("reaction", 0.82, rf(0.98, 1.06))
+    local atual, root = capriObterPersonagem()
+    if atual and root then
+        capriRaios(atual, root)
+        aberracao(0.16, 4, 0.18)
+    end
+end
+
+-- O script base não contém hitbox/combate próprio. Portanto, os taunts são
+-- ligados ao input de ataque local (clique/toque não processado), não a uma
+-- confirmação de acerto em outro jogador.
+rastrear(UserInputService.InputBegan:Connect(function(input, processado)
+    if encerrado or not CONFIG.Audio.Ativo or not CONFIG.Audio.FalasAtaque or not CONFIG.Audio.AtivarPorClique then return end
+    local tipo = input.UserInputType
+    local toque = (tipo == Enum.UserInputType.Touch)
+    local clique = (tipo == Enum.UserInputType.MouseButton1)
+    local gamepad = (tipo == Enum.UserInputType.Gamepad1 and input.KeyCode == Enum.KeyCode.ButtonR2)
+    if not (clique or toque or gamepad) then return end
+    if processado and not toque then return end
+    -- espera 1 frame: se o toque/clique foi em cima do MENU, não é ataque
+    task.defer(function()
+        if encerrado then return end
+        local tg = guiInputs[input]
+        if tg and os.clock() - tg < 0.25 then return end
+        local agora = os.clock()
+        if agora - ultimoAtaqueVoz < 1.65 then return end
+        ultimoAtaqueVoz = agora
+
+        if math.random() < 0.48 then
+            tocarVoz("preAttack", 0.92, rf(0.97, 1.04))
+        else
+            task.delay(0.32, function()
+                if not encerrado then tocarVoz("taunt", 0.98, rf(0.96, 1.05)) end
+            end)
+        end
+        capriEfeitoAtaque()
+    end)
+end))
+
+-- API local opcional: permite chamar falas extras quando o conteúdo for confirmado.
+genv.__CapriProtocol_PlayVoice = function(chave)
+    if type(chave) ~= "string" then return false end
+    if chave == "intro" or chave == "taunt" or chave == "reaction" or chave == "preAttack" then
+        tocarVoz(chave)
+        return true
+    end
+    if chave == "extra1" or chave == "extra2" then
+        if not CONFIG.Audio.AudiosDesconhecidos then return false end
+        tocarVoz(chave)
+        return true
+    end
+    return false
+end
+
+--=============================================================
+-- LIMPEZA (re-executar substitui)
+--=============================================================
+genv.__CapriProtocol_Cleanup = function()
+    encerrado = true
+    salvandoAtivo = false
+    emMorte = false
+    for _, c in ipairs(conexoes) do pcall(function() c:Disconnect() end) end
+    conexoes = {}
+    limparConexoes()
+    if hudConn then pcall(function() hudConn:Disconnect() end) end
+    if MN.loopConn then pcall(function() MN.loopConn:Disconnect() end) end
+    freezeAtivo = false
+    freezeToken = freezeToken + 1
+    limparFreeze()
+    CamFX.shakes, CamFX.fov, CamFX.congelar, CamFX.custom, CamFX.ligado = {}, nil, nil, nil, false
+    pcall(function() RunService:UnbindFromRenderStep(CAM_BIND) end)
+    local camera = workspace.CurrentCamera
+    if camera and fovOriginal then pcall(function() camera.FieldOfView = fovOriginal end) end
+    pcall(capriLimparAura)
+    if genv.__CapriProtocol_PlayVoice then genv.__CapriProtocol_PlayVoice = nil end
+    for s in pairs(audiosAtivos) do pcall(function() s:Destroy() end) end
+    for _, e in pairs(efl) do pcall(function() e:Destroy() end) end
+    pcall(function() if marcador then marcador:Destroy() end end)
+    pcall(function() fxFolder:Destroy() end)
+    pcall(function() gui:Destroy() end)
+end
+
+--=============================================================
+-- INICIALIZAÇÃO
+--=============================================================
+task.spawn(obterMorphDesc)   -- pré-carrega KinxCaesar
+
+local charInicial = player.Character
+if introPermitida then
+    -- spawn animado: roda UMA vez por servidor (o morph e a aura entram dentro da intro)
+    if charInicial then
+        seguro(configurarCharacter, charInicial)
+        seguro(iniciarIntroSegura, charInicial)
+        local rp0 = charInicial:FindFirstChild("HumanoidRootPart")
+        if rp0 then cframeSalvo = rp0.CFrame end
+    else
+        introEstado = "pendente"
+    end
+else
+    -- sem intro (já rodou neste servidor, ou desligada): liga tudo direto
+    if charInicial then
+        seguro(configurarCharacter, charInicial)
+        seguro(function()
+            charInicial:WaitForChild("Humanoid", 10)
+            task.wait(0.5)
+            aplicarMorph()      -- 🎭 mantém o morph original configurado
+        end)
+        local rp0 = charInicial:FindFirstChild("HumanoidRootPart")
+        if rp0 then cframeSalvo = rp0.CFrame end
+    end
+    if CONFIG.Menu.Ativo and CONFIG.Menu.AbrirAposIntro then
+        task.delay(0.8, abrirMenu)
+    end
+    introEstado = "feita"
+    task.delay(1.8, function()
+        if encerrado then return end
+        local personagem = player.Character
+        if personagem and capriIniciarAura then capriIniciarAura(personagem) end
+        tocarVoz("intro", 1.0, 1.0)
+    end)
+end
+
+print("[Capri Protocol] v11.0 carregado | menu: " .. (MN.root and "ok" or "desligado/erro")
+      .. " | intro: " .. (introPermitida and "sim" or "nao"))
